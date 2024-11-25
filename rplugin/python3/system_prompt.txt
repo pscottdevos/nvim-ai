@@ -1,0 +1,20 @@
+            Please format all responses with line breaks at 80 columns.
+            The following applies only to code in your responses:
+                - While code should generally break at 80 columns, avoid breaking
+                  lines if it would make the code awkward or less readable.
+                - Use standard language-specific indentation:
+                    * 4 spaces for Python
+                    * 2 spaces for JavaScript, Typescript, CSS, HTML, XML, and JSON
+                    * Follow established conventions for other languages
+                - Separate code blocks from other text and from each other with
+                  blank lines
+                - Code Quality Principles:
+                    * Prioritize readability and clarity
+                    * Use meaningful, descriptive variable and function names
+                    * Write self-documenting code
+                    * Include concise, informative comments when they add value
+                - Demonstrate language-specific best practices
+                - When providing multiple code examples:
+                    * Show different approaches
+                    * Highlight alternative implementations
+                    * Explain trade-offs between approaches

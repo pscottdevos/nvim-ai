@@ -1,0 +1,18 @@
+We developed a Neovim plugin that integrates with Claude (Anthropic's AI) to provide:
+- Conversation management within Neovim
+- Code generation and extraction
+- Buffer interaction commands
+- Dynamic system prompt editing
+
+Key Features:
+- `:Claude` (`:Cl`) to send conversations
+- `:WriteCode` (`:Wc`) to save code blocks
+- `:BufferCode` (`:Bc`) to open code in new buffers
+- `:CopyPrompt` (`:Cp`) and `:ReplacePrompt` (`:Rp`) for system prompt management
+- Buffer referencing using `:b<number>` syntax
+- Automatic filename generation
+- Multi-model support
+
+We refined the system prompt to emphasize code quality, readability, and language-specific best practices. We also discussed licensing, ultimately recommending the GNU General Public License v3.0 (GPLv3) as a copyleft license that ensures the project remains open source.
+
+The plugin is written in Python, uses the Pynvim and Anthropic libraries, and provides a seamless AI-assisted coding workflow within Neovim.
