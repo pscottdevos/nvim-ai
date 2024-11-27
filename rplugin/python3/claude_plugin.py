@@ -15,6 +15,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+import json
 import pynvim
 import anthropic
 import os
@@ -29,7 +30,34 @@ from traceback import format_exc
 BUFFER_PATTERN = re.compile(r'\s+:b(\d+)\s+')
 
 # Maximum number of tokens to send to Claude
-MAX_TOKENS = 4096
+DEFAULT_MAX_TOKENS = 4096
+ABSOLUTE_MAX_TOKENS = 8192
+ABSOLUTE_MIN_TOKENS = 512
+
+SETTINGS_FILE = 'nvim_claude.json'
+
+DEFAULT_SYSTEM_PROMPT = """
+    Please format all responses with line breaks at 80 columns.
+    The following applies only to code in your responses:
+        - While code should generally break at 80 columns, avoid breaking
+            lines if it would make the code awkward or less readable.
+        - Use standard language-specific indentation:
+            * 4 spaces for Python
+            * 2 spaces for JavaScript, Typescript, CSS, HTML, XML, and JSON
+            * Follow established conventions for other languages
+        - Separate code blocks from other text and from each other with
+            blank lines
+        - Code Quality Principles:
+            * Prioritize readability and clarity
+            * Use meaningful, descriptive variable and function names
+            * Write self-documenting code
+            * Include concise, informative comments when they add value
+        - Demonstrate language-specific best practices
+            - When providing multiple code examples:
+                * Show different approaches
+                * Highlight alternative implementations
+                * Explain trade-offs between approaches
+"""
 
 
 @pynvim.plugin
@@ -37,42 +65,53 @@ class ClaudePlugin:
     def __init__(self, nvim):
         self.nvim = nvim
         self.client = anthropic.Client()
-        self.current_model = "claude-3-5-haiku-20241022"
-        self.current_filename: Optional[str] = None
-        try:
-            script_dir = os.path.dirname(__file__)
-            prompt_path = os.path.join(script_dir, 'system_prompt.txt')
-            with open(prompt_path, 'r') as file:
-                self.system_prompt = file.read()
-        except FileNotFoundError:
-            self.nvim.err_write(
-                "system_prompt.txt not found. Using default system prompt.\n")
-            self.system_prompt = """
-            Please format all responses with line breaks at 80 columns.
-            The following applies only to code in your responses:
-                - While code should generally break at 80 columns, avoid breaking
-                  lines if it would make the code awkward or less readable.
-                - Use standard language-specific indentation:
-                    * 4 spaces for Python
-                    * 2 spaces for JavaScript, Typescript, CSS, HTML, XML, and JSON
-                    * Follow established conventions for other languages
-                - Separate code blocks from other text and from each other with
-                  blank lines
-                - Code Quality Principles:
-                    * Prioritize readability and clarity
-                    * Use meaningful, descriptive variable and function names
-                    * Write self-documenting code
-                    * Include concise, informative comments when they add value
-                - Demonstrate language-specific best practices
-                - When providing multiple code examples:
-                    * Show different approaches
-                    * Highlight alternative implementations
-                    * Explain trade-offs between approaches
-            """
-        except Exception as e:
-            self.nvim.err_write(
-                f"Error loading system prompt from file:\n{format_exc()}\n")
-            self.system_prompt = ""
+
+        # Default settings
+        default_config = {
+            "current_model": "claude-3-5-haiku-20241022",
+            "current_filename": None,
+            "max_tokens": DEFAULT_MAX_TOKENS,
+            "truncate_conversation": True,
+            "system_prompt": DEFAULT_SYSTEM_PROMPT
+        }
+
+        # Load configuration from file
+        config_dir = os.path.join(os.path.expanduser('~'), '.config', 'nvim')
+        attributes_path = os.path.join(config_dir, SETTINGS_FILE)
+
+        # Initialize configuration with default settings
+        config = default_config.copy()
+
+        if os.path.exists(attributes_path):
+            try:
+                with open(attributes_path, 'r') as file:
+                    file_config = json.load(file)
+                    # Update default configuration with file configuration
+                    config.update(file_config)
+            except Exception as e:
+                self.nvim.err_write(
+                    f"Error loading configuration file:\n{format_exc()}\n")
+
+        # Set attributes from the updated configuration
+        self.current_model = config["current_model"]
+        self.current_filename = config["current_filename"]
+        self.max_tokens = config["max_tokens"]
+        self.truncate_conversation = config["truncate_conversation"]
+        self.system_prompt = config["system_prompt"]
+
+    def _save_attributes_to_file(self):
+        attributes = {
+            "current_model": self.current_model,
+            "current_filename": self.current_filename,
+            "max_tokens": self.max_tokens,
+            "truncate_conversation": self.truncate_conversation,
+            "system_prompt": self.system_prompt
+        }
+        config_dir = os.path.join(os.path.expanduser('~'), '.config', 'nvim')
+        os.makedirs(config_dir, exist_ok=True)
+        attributes_path = os.path.join(config_dir, SETTINGS_FILE)
+        with open(attributes_path, 'w') as file:
+            json.dump(attributes, file, indent=2)
 
     @staticmethod
     def _extract_code_blocks(text: str) -> List[Tuple[str, str]]:
@@ -165,34 +204,31 @@ class ClaudePlugin:
         return self._get_filename_from_response(filename_response)
 
     def _truncate_conversation(self, messages: List[dict], max_tokens: int) -> List[dict]:
+        if not messages or len(messages) == 1:
+            return messages
 
-        # Tokenize the system prompt
-        system_prompt_tokens = anthropic.count_tokens(self.system_prompt)
+        prompt_tokens, message_tokens = self._count_tokens(messages)
 
-        # Tokenize each message and store the token counts
-        message_tokens = [
-            anthropic.count_tokens(msg["content"]) for msg in messages]
-        total_tokens = system_prompt_tokens + sum(message_tokens)
+        total_tokens = prompt_tokens + \
+            sum([m.input_tokens for m in message_tokens])
 
         if total_tokens <= max_tokens:
             return messages
 
         truncated_messages = []
-        current_tokens = system_prompt_tokens
+        current_tokens = prompt_tokens
 
         # Iterate over the messages in reverse order
-        for i in range(len(messages) - 1, -1, -1):
-            if current_tokens + message_tokens[i] <= max_tokens:
+        for i in range(len(messages) - 1, 0, -1):
+            if current_tokens + message_tokens[i].input_tokens <= max_tokens:
                 truncated_messages.insert(0, messages[i])
-                current_tokens += message_tokens[i]
+                current_tokens += message_tokens[i].input_tokens
             else:
                 break
 
         return truncated_messages
 
-    def _truncate_conversation(self, messages: List[dict], max_tokens: int) -> List[dict]:
-        if not messages or len(messages) == 1:
-            return messages
+    def _count_tokens(self, messages: List[dict]) -> (int, List):
         # Tokenize the system prompt and first message because we have to
         # include a message or anthropic will throw an error
         system_prompt_tokens_and_first_message = \
@@ -216,23 +252,8 @@ class ClaudePlugin:
         # with the system prompt
         prompt_tokens = system_prompt_tokens_and_first_message.input_tokens - \
             message_tokens[0].input_tokens
-        total_tokens = prompt_tokens + \
-            sum([m.input_tokens for m in message_tokens])
 
-        if total_tokens <= max_tokens:
-            return messages
-
-        truncated_messages = []
-        current_tokens = prompt_tokens
-
-        # Iterate over the messages in reverse order
-        for i in range(len(messages) - 1, 0, -1):
-            if current_tokens + message_tokens[i].input_tokens <= max_tokens:
-                truncated_messages.insert(0, messages[i])
-                current_tokens += message_tokens[i].input_tokens
-            else:
-                break
-
+        return prompt_tokens, message_tokens
         return truncated_messages
 
     def _wrap_new_content_with_user_tags(self) -> None:
@@ -257,33 +278,7 @@ class ClaudePlugin:
             wrapped_content = f"<user>\n{new_content}\n</user>"
             self.nvim.current.buffer[:] = wrapped_content.split('\n')
 
-    @pynvim.command('CM', nargs='1', sync=True)
-    @pynvim.command('ClaudeModel', nargs='1', sync=True)
-    def claude_model_command(self, args: List[str]) -> None:
-        """Change the current model to the one provided."""
-        model = args[0]
-        if model not in self.get_claude_models():
-            self.nvim.err_write(f"Error: {model} is not a valid model.\n")
-        else:
-            self.current_model = model
-            self.nvim.out_write(f"Current model changed to {model}.\n")
-
-    @pynvim.command('ClaudeModels', nargs='0', sync=True)
-    def claude_models_command(self, args: List[str]) -> None:
-        """List available Anthropic models that can be used with :Claude command."""
-
-        # Format the model list for display
-        model_list = ["Available Claude models:"]
-        for model in self.get_claude_models():
-            if model == self.current_model:
-                model_list.append(f"  - {model} (current)")
-            else:
-                model_list.append(f"  - {model}")
-
-        self.nvim.out_write("\n".join(model_list) + "\n")
-
     @pynvim.command('Cl', nargs='0', sync=True)
-    @pynvim.command('Claude', nargs='0', sync=True)
     def claude_command(self, args: List[str]) -> None:
 
         self._wrap_new_content_with_user_tags()
@@ -313,14 +308,21 @@ class ClaudePlugin:
             })
         is_continuation = True if len(messages) > 1 else False
 
-        messages = self._truncate_conversation(messages, MAX_TOKENS)
+        if self.truncate_conversation:
+            truncated_messages = self._truncate_conversation(
+                messages, self.max_tokens)
+            if len(truncated_messages) < len(messages):
+                self.nvim.out_write(
+                    f"Truncated conversation from {len(messages)} to "
+                    f"{len(truncated_messages)} messages.\n")
+                messages = truncated_messages
 
         try:
             response = self.client.messages.create(
                 system=self.system_prompt,
                 model=self.current_model,
                 messages=messages,
-                max_tokens=MAX_TOKENS
+                max_tokens=self.max_tokens
             )
 
             formatted_response = self._format_response(response.content)
@@ -367,8 +369,48 @@ class ClaudePlugin:
             self.nvim.err_write(
                 f"Error generating response:\n{format_exc()}\n")
 
+    @pynvim.command('Claude', nargs='0', sync=True)
+    def claude_full_command(self, args: List[str]) -> None:
+        return self.claude_command(args)
+
+    @pynvim.command('CM', nargs='?', sync=True)
+    def claude_model_command(self, args: List[str]) -> None:
+        """Change the current model to the one provided or list available
+        models if no argument is given."""
+        if args:
+            models = self.get_claude_models()
+            model_name_or_index = args[0]
+            try:
+                model_index = int(model_name_or_index) - 1
+                if model_index < 0 or model_index >= len(models):
+                    self.nvim.err_write(
+                        f"Error: {model_name_or_index} is not a valid model index.\n")
+                    return
+                model = models[model_index]
+            except (ValueError, TypeError):
+                if model_name_or_index not in models:
+                    self.nvim.err_write(
+                        f"Error: {model_name_or_index} is not a valid model.\n")
+                    return
+                model = model_name_or_index
+            self.current_model = model
+            self.nvim.out_write(f"Current model changed to {model}.\n")
+            self._save_attributes_to_file()
+        else:
+            # Format the model list for display
+            model_list = ["Available Claude models:"]
+            for i, model in enumerate(self.get_claude_models()):
+                if model == self.current_model:
+                    model_list.append(f"  {i + 1}. {model} (current)")
+                else:
+                    model_list.append(f"  {i + 1}. {model}")
+            self.nvim.out_write("\n".join(model_list) + "\n")
+
+    @pynvim.command('ClaudeModel', nargs='?', sync=True)
+    def claude_model_full_command(self, args: List[str]) -> None:
+        return self.claude_model_command(args)
+
     @pynvim.command('Bc', nargs='0', sync=True)
-    @pynvim.command('BufferCode', nargs='0', sync=True)
     def buffer_code_command(self, args: List[str]) -> None:
         buffer_content = '\n'.join(self.nvim.current.buffer[:])
 
@@ -397,8 +439,11 @@ class ClaudePlugin:
         # Return to the original buffer
         self.nvim.command(f'buffer {original_buffer_number}')
 
+    @pynvim.command('BufferCode', nargs='0', sync=True)
+    def buffer_code_full_command(self, args: List[str]) -> None:
+        return self.buffer_code_command(args)
+
     @pynvim.command('Wc', nargs='0', sync=True)
-    @pynvim.command('WriteCode', nargs='0', sync=True)
     def write_code_command(self, args: List[str]) -> None:
         buffer_content = '\n'.join(self.nvim.current.buffer[:])
 
@@ -421,8 +466,11 @@ class ClaudePlugin:
                     f"Error saving code block:\n{format_exc()}\n"
                 )
 
+    @pynvim.command('WriteCode', nargs='0', sync=True)
+    def write_code_full_command(self, args: List[str]) -> None:
+        return self.write_code_command(args)
+
     @pynvim.command('Cp', nargs='0', sync=True)
-    @pynvim.command('CopyPrompt', nargs='0', sync=True)
     def copy_prompt_command(self, args: List[str]) -> None:
         """Copy the system prompt to a new buffer."""
         try:
@@ -441,8 +489,11 @@ class ClaudePlugin:
                 f"Error opening new buffer for system prompt:\n{format_exc()}\n"
             )
 
+    @pynvim.command('CopyPrompt', nargs='0', sync=True)
+    def copy_prompt_full_command(self, args: List[str]) -> None:
+        return self.copy_prompt_command(args)
+
     @pynvim.command('Rp', nargs='1', sync=True)
-    @pynvim.command('ReplacePrompt', nargs='1', sync=True)
     def replace_prompt_command(self, args: List[str]) -> None:
         """Replace the system prompt with the contents of the specified buffer."""
         try:
@@ -456,7 +507,136 @@ class ClaudePlugin:
             self.system_prompt = buffer_content
             self.nvim.out_write(
                 f"System prompt replaced with contents of buffer {buffer_number}.\n")
+            self._save_attributes_to_file()
         except Exception as e:
             self.nvim.err_write(
                 f"Error replacing system prompt:\n{format_exc()}\n"
             )
+
+    @pynvim.command('ReplacePrompt', nargs='1', sync=True)
+    def replace_prompt_full_command(self, args: List[str]) -> None:
+        return self.replace_prompt_command(args)
+
+    @pynvim.command('MT', nargs='?', sync=True)
+    def max_tokens_command(self, args: List[str]) -> None:
+        """Show or change the maximum number of tokens."""
+        try:
+            if args:
+                new_max_tokens = int(args[0])
+                if (new_max_tokens < ABSOLUTE_MIN_TOKENS or
+                        new_max_tokens > ABSOLUTE_MAX_TOKENS):
+                    self.nvim.err_write(
+                        f"Error: max tokens must be between {ABSOLUTE_MIN_TOKENS} "
+                        f"and {ABSOLUTE_MAX_TOKENS}.\n")
+                    return
+                self.max_tokens = new_max_tokens
+                self.nvim.out_write(
+                    f"Max tokens changed to {new_max_tokens}.\n")
+                self._save_attributes_to_file()
+            else:
+                self.nvim.out_write(
+                    f"Current max tokens: {self.max_tokens}\n")
+        except ValueError:
+            self.nvim.err_write(
+                "Error: max tokens must be an integer.\n")
+        except Exception as e:
+            self.nvim.err_write(
+                f"Error changing max tokens:\n{format_exc()}\n"
+            )
+
+    @pynvim.command('MaxTokens', nargs='?', sync=True)
+    def max_tokens_full_command(self, args: List[str]) -> None:
+        return self.max_tokens_command(args)
+
+    @pynvim.command('TC', nargs='0', sync=True)
+    def token_count_command(self, args: List[str]) -> None:
+        """Respond with the number of tokens in the current buffer."""
+        try:
+            buffer_content = '\n'.join(self.nvim.current.buffer[:])
+            messages = [{"role": "user", "content": buffer_content}]
+            prompt_tokens, message_tokens = self._count_tokens(messages)
+            total_tokens = prompt_tokens + \
+                sum([m.input_tokens for m in message_tokens])
+            self.nvim.out_write(
+                f"Current buffer token count: {total_tokens}\n")
+        except Exception as e:
+            self.nvim.err_write(
+                f"Error counting tokens in current buffer:\n{format_exc()}\n"
+            )
+
+    @pynvim.command('TokenCount', nargs='0', sync=True)
+    def token_count_full_command(self, args: List[str]) -> None:
+        return self.token_count_command(args)
+
+    @pynvim.command('Tr', nargs='?', sync=True)
+    def truncate_conversation_command(self, args: List[str]) -> None:
+        """Toggle truncation of the conversation."""
+        if args:
+            self.truncate_conversation = args[0].lower() == 'on'
+            self._save_attributes_to_file()
+        self.nvim.out_write(
+            "Truncation of the conversation is "
+            f"{'' if self.truncate_conversation else 'not '}enabled.\n")
+
+    @pynvim.command('Truncate', nargs='?', sync=True)
+    def truncate_conversation_full_command(self, args: List[str]) -> None:
+        return self.truncate_conversation_command(args)
+
+    @pynvim.command('CS', nargs='?', sync=True)
+    def load_claude_settings_command(self, args: List[str]) -> None:
+        if not args:
+            pass
+        elif args[0].lower() == 'defaults':
+            self.current_model = "claude-3-5-haiku-20241022"
+            self.max_tokens = DEFAULT_MAX_TOKENS
+            self.truncate_conversation = True
+            self.system_prompt = DEFAULT_SYSTEM_PROMPT
+            self._save_attributes_to_file()
+            self.nvim.out_write("Settings restored to defaults.\n")
+        elif args[0].lower() == 'save':
+            self._save_attributes_to_file()
+            self.nvim.out_write("Settings saved.\n")
+        elif args[0].find('=') != -1:
+            setting, value = [s.strip() for s in args[0].split('=')]
+            if setting not in ['model', 'max_tokens', 'truncate']:
+                self.nvim.err_write(
+                    f"Error: {setting} is not a valid setting.\n")
+                return
+            if setting == 'model':
+                value = value.strip()
+                if value not in self.get_claude_models():
+                    self.nvim.err_write(
+                        f"Error: {value} is not a valid model.\n")
+                    return
+                self.current_model = value
+            elif setting == 'max_tokens':
+                value = int(value)
+                if (value < ABSOLUTE_MIN_TOKENS or value > ABSOLUTE_MAX_TOKENS):
+                    self.nvim.err_write(
+                        "Error: max tokens must be between "
+                        f"{ABSOLUTE_MIN_TOKENS} and {ABSOLUTE_MAX_TOKENS}.\n")
+                    return
+                self.max_tokens = value
+            elif setting == 'truncate':
+                value = value.strip()
+                if value not in ['on', 'off']:
+                    self.nvim.err_write(
+                        "Error: truncate must be 'on' or 'off'.\n")
+                    return
+                self.truncate_conversation = value == 'on'
+        else:
+            self.nvim.err_write(
+                "Invalid argument. Use 'defaults' or 'save' or "
+                "'model=...', 'max_tokens=...', 'truncate=...'\n")
+            return
+        self.nvim.out_write(
+            f"Current settings:\n"
+            f"Model: {self.current_model}\n"
+            f"Max Tokens: {self.max_tokens}\n"
+            f"Truncate Conversation: {self.truncate_conversation}\n"
+            f"System Prompt: {self.system_prompt}\n"
+        )
+
+    @pynvim.command('ClaudeSettings', nargs='?', sync=True)
+    def claude_settings_full_command(self, args: List[str]) -> None:
+        return self.load_claude_settings_command(args)

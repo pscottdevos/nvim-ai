@@ -59,6 +59,19 @@ plugin without setting the `ANTHROPIC_API_KEY` environment variable.
 - `:CopyPrompt` (`:Cp`): Copy current system prompt to a new buffer
 - `:ReplacePrompt` (`:Rp`): Replace system prompt with buffer contents
 
+### Token Management
+
+- `:MaxTokens` (`:MT`): Show or change the maximum number of tokens
+- `:TokenCount` (`:TC`): Respond with the number of tokens in the current buffer
+
+### Conversation Truncation
+
+- `:Truncate` (`:Tr`): Toggle truncation of the conversation
+
+### Settings Management
+
+- `:ClaudeSettings` (`:CS`): Load, save, or reset Claude settings
+
 ## Buffer Reference
 
 Reference other buffers using `:b<number>` syntax when talking to Claude.
