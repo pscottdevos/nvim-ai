@@ -18,6 +18,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import json
 import pynvim
 import anthropic
+import base64
+import mimetypes
 import os
 import re
 import shlex
@@ -28,11 +30,19 @@ from traceback import format_exc
 
 # Pattern to match :b<buffer_number> with at least one surrounding whitespace
 BUFFER_PATTERN = re.compile(r'\s+:b(\d+)\s+')
+# Pattern to match material between <content> tags
+CONTENT_PATTERN = re.compile(r'<content>(.*?)</content>', re.DOTALL)
 
-# Maximum number of tokens to send to Claude
+# Maximum number of tokens Claude will return
 DEFAULT_MAX_TOKENS = 4096
 ABSOLUTE_MAX_TOKENS = 8192
 ABSOLUTE_MIN_TOKENS = 512
+
+DEFAULT_TEMPERATURE = 0.25
+
+# Maximum number of tokens to send to Claude
+ABSOLUTE_MIN_CONTEXT_TOKENS = 1024 * 200
+MAX_CONTEXT_TOKENS = ABSOLUTE_MIN_CONTEXT_TOKENS
 
 SETTINGS_FILE = 'nvim_claude.json'
 
@@ -64,15 +74,17 @@ DEFAULT_SYSTEM_PROMPT = """
 class ClaudePlugin:
     def __init__(self, nvim):
         self.nvim = nvim
-        self.client = anthropic.Client()
+        self.client = anthropic.Client(timeout=10.0)
 
         # Default settings
         default_config = {
             "current_model": "claude-3-5-haiku-20241022",
             "current_filename": None,
             "max_tokens": DEFAULT_MAX_TOKENS,
+            "max_context_tokens": MAX_CONTEXT_TOKENS,
             "truncate_conversation": True,
-            "system_prompt": DEFAULT_SYSTEM_PROMPT
+            "system_prompt": DEFAULT_SYSTEM_PROMPT,
+            "temperature": DEFAULT_TEMPERATURE,
         }
 
         # Load configuration from file
@@ -96,16 +108,20 @@ class ClaudePlugin:
         self.current_model = config["current_model"]
         self.current_filename = config["current_filename"]
         self.max_tokens = config["max_tokens"]
+        self.max_context_tokens = config["max_context_tokens"]
         self.truncate_conversation = config["truncate_conversation"]
         self.system_prompt = config["system_prompt"]
+        self.temperature = config["temperature"]
 
     def _save_attributes_to_file(self):
         attributes = {
             "current_model": self.current_model,
             "current_filename": self.current_filename,
             "max_tokens": self.max_tokens,
+            "max_context_tokens": self.max_context_tokens,
             "truncate_conversation": self.truncate_conversation,
-            "system_prompt": self.system_prompt
+            "system_prompt": self.system_prompt,
+            "temperature": self.temperature,
         }
         config_dir = os.path.join(os.path.expanduser('~'), '.config', 'nvim')
         os.makedirs(config_dir, exist_ok=True)
@@ -155,11 +171,35 @@ class ClaudePlugin:
             "claude-3-opus-20240229",
             "claude-3-sonnet-20240229",
             "claude-3-haiku-20240229",
-            "claude-2.1",
-            "claude-2.0",
-            "claude-instant-1.2"
         ]
         return models
+
+    def _count_tokens(self, messages: List[dict]) -> Tuple[int, int]:
+        # Tokenize the system prompt and first message because we have to
+        # include a message or anthropic will throw an error
+        system_prompt_tokens_and_first_message = \
+            self.client.beta.messages.count_tokens(
+                betas=["token-counting-2024-11-01"],
+                model=self.current_model,
+                system=self.system_prompt,
+                messages=[messages[0]],
+            )
+        # Tokenize each message and store the token counts
+        message_tokens = [
+            self.client.beta.messages.count_tokens(
+                betas=["token-counting-2024-11-01"],
+                model=self.current_model,
+                system="",
+                messages=[msg],
+            )
+            for msg in messages
+        ]
+        # Subtract the tokens of the first message because we included it
+        # with the system prompt
+        prompt_tokens = system_prompt_tokens_and_first_message.input_tokens - \
+            message_tokens[0].input_tokens
+
+        return prompt_tokens, message_tokens
 
     def _find_last_response(self, buffer_content: str) -> Optional[str]:
         cursor_pos = self.nvim.current.window.cursor[0] - 1
@@ -203,6 +243,110 @@ class ClaudePlugin:
         )
         return self._get_filename_from_response(filename_response)
 
+    def _process_content(self, input_string: str) -> List[dict]:
+        """                                                                                                         
+        Process input string, converting <content> file references to base64                                          
+        encoded content or preserving text.                                                                         
+        """
+        result = []
+        last_end = 0
+
+        for match in CONTENT_PATTERN.finditer(input_string):
+            # Add any text before the tag
+            if match.start() > last_end:
+                result.append({
+                    "type": "text",
+                    "text": input_string[last_end:match.start()]
+                })
+
+            # Process file reference
+            filepath = match.group(1).strip()
+            filepath = os.path.expanduser(filepath)
+
+            try:
+                with open(filepath, 'rb') as file:
+                    content = file.read()
+                    media_type, _ = mimetypes.guess_type(filepath)
+
+                    result.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type or "application/octet-stream",
+                            "data": base64.b64encode(content).decode('utf-8')
+                        }
+                    })
+
+            except (IOError, OSError) as e:
+                self.nvim.err_write(
+                    f"Error reading file {filepath}: {e}\n")
+                result.append({
+                    "type": "text",
+                    "text": input_string[match.start():match.end()]
+                })
+
+            last_end = match.end()
+
+        # Add any remaining text after last tag
+        if last_end < len(input_string):
+            result.append({
+                "type": "text",
+                "text": input_string[last_end:]
+            })
+
+        return result
+
+    def _prepare_content(self, original_content: str) -> str:
+        """Extract content blocks from the given text."""
+        text = original_content
+        result = []
+        while text:
+            match = CONTENT_PATTERN.match(text)
+            if match:
+                before, filename, after = match.groups()
+                if before:
+                    result.append({
+                        "type": "text",
+                        "text": before
+                    })
+                filename = filename.strip()
+                if filename.startswith("~"):
+                    filename = os.path.expanduser(filename)
+                file_extension = os.path.splitext(filename)[1].lower()
+                media_type = {
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.png': 'image/png',
+                    '.gif': 'image/gif',
+                    '.webp': 'image/webp',
+                }.get(file_extension, 'text/plain')
+                if not media_type:
+                    media_type = "text/plain"
+                content_type = media_type.split('/')[0]
+                try:
+                    with open(filename, 'rb') as file:
+                        encoded_data = base64.b64encode(
+                            file.read()).decode('utf-8')
+                    result.append({
+                        "type": content_type,
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": encoded_data
+                        }
+                    })
+                except Exception as e:
+                    self.nvim.err_write(
+                        f"Error loading file {filename}: {str(e)}\n")
+                text = after
+            else:
+                result.append({
+                    "type": "text",
+                    "text": text
+                })
+                break
+        return result
+
     def _truncate_conversation(self, messages: List[dict], max_tokens: int) -> List[dict]:
         if not messages or len(messages) == 1:
             return messages
@@ -226,34 +370,6 @@ class ClaudePlugin:
             else:
                 break
 
-        return truncated_messages
-
-    def _count_tokens(self, messages: List[dict]) -> (int, List):
-        # Tokenize the system prompt and first message because we have to
-        # include a message or anthropic will throw an error
-        system_prompt_tokens_and_first_message = \
-            self.client.beta.messages.count_tokens(
-                betas=["token-counting-2024-11-01"],
-                model=self.current_model,
-                system=self.system_prompt,
-                messages=[messages[0]],
-            )
-        # Tokenize each message and store the token counts
-        message_tokens = [
-            self.client.beta.messages.count_tokens(
-                betas=["token-counting-2024-11-01"],
-                model=self.current_model,
-                system="",
-                messages=[msg],
-            )
-            for msg in messages
-        ]
-        # Subtract the tokens of the first message because we included it
-        # with the system prompt
-        prompt_tokens = system_prompt_tokens_and_first_message.input_tokens - \
-            message_tokens[0].input_tokens
-
-        return prompt_tokens, message_tokens
         return truncated_messages
 
     def _wrap_new_content_with_user_tags(self) -> None:
@@ -302,6 +418,8 @@ class ClaudePlugin:
         for match in pattern.finditer(buffer_content):
             role = match.group(1)
             content = match.group(2).strip()
+            if role == "user":
+                content = self._process_content(content)
             messages.append({
                 "role": role,
                 "content": content
@@ -310,7 +428,7 @@ class ClaudePlugin:
 
         if self.truncate_conversation:
             truncated_messages = self._truncate_conversation(
-                messages, self.max_tokens)
+                messages, self.max_context_tokens)
             if len(truncated_messages) < len(messages):
                 self.nvim.out_write(
                     f"Truncated conversation from {len(messages)} to "
@@ -322,7 +440,8 @@ class ClaudePlugin:
                 system=self.system_prompt,
                 model=self.current_model,
                 messages=messages,
-                max_tokens=self.max_tokens
+                max_tokens=self.max_tokens,
+                temperature=self.temperature
             )
 
             formatted_response = self._format_response(response.content)
@@ -598,7 +717,7 @@ class ClaudePlugin:
             self.nvim.out_write("Settings saved.\n")
         elif args[0].find('=') != -1:
             setting, value = [s.strip() for s in args[0].split('=')]
-            if setting not in ['model', 'max_tokens', 'truncate']:
+            if setting not in ['model', 'max_tokens', 'truncate', 'temperature']:
                 self.nvim.err_write(
                     f"Error: {setting} is not a valid setting.\n")
                 return
@@ -631,10 +750,12 @@ class ClaudePlugin:
             return
         self.nvim.out_write(
             f"Current settings:\n"
-            f"Model: {self.current_model}\n"
-            f"Max Tokens: {self.max_tokens}\n"
-            f"Truncate Conversation: {self.truncate_conversation}\n"
-            f"System Prompt: {self.system_prompt}\n"
+            f"model: {self.current_model}\n"
+            f"max_tokens: {self.max_tokens}\n"
+            f"max_context_tokens: {self.max_context_tokens}\n"
+            f"truncate_conversation: {self.truncate_conversation}\n"
+            f"temperature: {self.temperature}\n"
+            f"system_prompt: {self.system_prompt}\n"
         )
 
     @pynvim.command('ClaudeSettings', nargs='?', sync=True)
