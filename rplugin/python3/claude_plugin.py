@@ -175,6 +175,8 @@ class ClaudePlugin:
         return models
 
     def _count_tokens(self, messages: List[dict]) -> Tuple[int, int]:
+        if not messages:
+            return 0, []
         # Tokenize the system prompt and first message because we have to
         # include a message or anthropic will throw an error
         system_prompt_tokens_and_first_message = \
@@ -296,57 +298,6 @@ class ClaudePlugin:
 
         return result
 
-    def _prepare_content(self, original_content: str) -> str:
-        """Extract content blocks from the given text."""
-        text = original_content
-        result = []
-        while text:
-            match = CONTENT_PATTERN.match(text)
-            if match:
-                before, filename, after = match.groups()
-                if before:
-                    result.append({
-                        "type": "text",
-                        "text": before
-                    })
-                filename = filename.strip()
-                if filename.startswith("~"):
-                    filename = os.path.expanduser(filename)
-                file_extension = os.path.splitext(filename)[1].lower()
-                media_type = {
-                    '.jpg': 'image/jpeg',
-                    '.jpeg': 'image/jpeg',
-                    '.png': 'image/png',
-                    '.gif': 'image/gif',
-                    '.webp': 'image/webp',
-                }.get(file_extension, 'text/plain')
-                if not media_type:
-                    media_type = "text/plain"
-                content_type = media_type.split('/')[0]
-                try:
-                    with open(filename, 'rb') as file:
-                        encoded_data = base64.b64encode(
-                            file.read()).decode('utf-8')
-                    result.append({
-                        "type": content_type,
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": encoded_data
-                        }
-                    })
-                except Exception as e:
-                    self.nvim.err_write(
-                        f"Error loading file {filename}: {str(e)}\n")
-                text = after
-            else:
-                result.append({
-                    "type": "text",
-                    "text": text
-                })
-                break
-        return result
-
     def _truncate_conversation(self, messages: List[dict], max_tokens: int) -> List[dict]:
         if not messages or len(messages) == 1:
             return messages
@@ -370,6 +321,9 @@ class ClaudePlugin:
             else:
                 break
 
+        # If we pared down to no messages at all, keep the last message
+        if not truncated_messages:
+            truncated_messages = messages[-1:]
         return truncated_messages
 
     def _wrap_new_content_with_user_tags(self) -> None:

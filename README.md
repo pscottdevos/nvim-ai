@@ -129,6 +129,13 @@ Try adding this to the end of the system prompt to see what happens:
 End every response with "I feel pretty!"
 ```
 
+## Testing
+
+Run
+```
+python -m unittest discover -s tests
+```
+
 
 ## License
 
