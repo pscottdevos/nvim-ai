@@ -20,7 +20,7 @@ class TestClaudePlugin(unittest.TestCase):
         mock_path_exists.return_value = True
         mock_json_load.return_value = {
             "current_model": "test-model",
-            "current_filename": "test.py",
+            "filename_model": "test-filename-model",
             "max_tokens": 1000,
             "max_context_tokens": 2000,
             "truncate_conversation": False,
@@ -31,7 +31,7 @@ class TestClaudePlugin(unittest.TestCase):
         self.plugin.__init__(self.nvim)
 
         self.assertEqual(self.plugin.current_model, "test-model")
-        self.assertEqual(self.plugin.current_filename, "test.py")
+        self.assertEqual(self.plugin.filename_model, "test-filename-model")
         self.assertEqual(self.plugin.max_tokens, 1000)
         self.assertEqual(self.plugin.max_context_tokens, 2000)
         self.assertFalse(self.plugin.truncate_conversation)
@@ -48,7 +48,6 @@ class TestClaudePlugin(unittest.TestCase):
 
         self.assertEqual(self.plugin.current_model,
                          "claude-3-5-haiku-20241022")
-        self.assertIsNone(self.plugin.current_filename)
         self.assertEqual(self.plugin.max_tokens, 4096)
         self.assertEqual(self.plugin.max_context_tokens, 204800)
         self.assertTrue(self.plugin.truncate_conversation)
@@ -81,7 +80,7 @@ class TestClaudePlugin(unittest.TestCase):
         mock_file = mock_open.return_value.__enter__.return_value
 
         self.plugin.current_model = "test-model"
-        self.plugin.current_filename = "test.py"
+        self.plugin.filename_model = "test-filename-model"
         self.plugin.max_tokens = 1000
         self.plugin.max_context_tokens = 2000
         self.plugin.truncate_conversation = False
@@ -96,12 +95,13 @@ class TestClaudePlugin(unittest.TestCase):
             os.path.expanduser('~'), '.config', 'nvim', 'nvim_claude.json'), 'w')
         mock_json_dump.assert_called_once_with({
             "current_model": "test-model",
-            "current_filename": "test.py",
+            "filename_model": "test-filename-model",
             "max_tokens": 1000,
             "max_context_tokens": 2000,
             "truncate_conversation": False,
             "system_prompt": "Test prompt",
             "temperature": 0.5,
+            "timeout": 300.0,
         }, mock_file, indent=2)
 
     def test__extract_code_blocks__multiple_blocks(self):
@@ -278,7 +278,7 @@ class TestClaudePlugin(unittest.TestCase):
         self.plugin.system_prompt = "This is a system prompt."
 
         # Mock the client response for token counting
-        self.plugin.client.beta.messages.count_tokens = unittest.mock.Mock(side_effect=[
+        self.plugin.claude_client.beta.messages.count_tokens = unittest.mock.Mock(side_effect=[
             unittest.mock.Mock(input_tokens=10),
             unittest.mock.Mock(input_tokens=5),
             unittest.mock.Mock(input_tokens=8)
@@ -297,7 +297,7 @@ class TestClaudePlugin(unittest.TestCase):
         self.plugin.system_prompt = "This is a system prompt."
 
         # Mock the client response for token counting
-        self.plugin.client.beta.messages.count_tokens = unittest.mock.Mock(
+        self.plugin.claude_client.beta.messages.count_tokens = unittest.mock.Mock(
             return_value=unittest.mock.Mock(input_tokens=0))
 
         prompt_tokens, message_tokens = self.plugin._count_tokens(messages)
@@ -313,7 +313,7 @@ class TestClaudePlugin(unittest.TestCase):
         self.plugin.system_prompt = "This is a system prompt."
 
         # Mock the client response for token counting
-        self.plugin.client.beta.messages.count_tokens = unittest.mock.Mock(side_effect=[
+        self.plugin.claude_client.beta.messages.count_tokens = unittest.mock.Mock(side_effect=[
             unittest.mock.Mock(input_tokens=10),
             unittest.mock.Mock(input_tokens=5)
         ])
@@ -375,7 +375,7 @@ class TestClaudePlugin(unittest.TestCase):
         code = "def hello_world():\n    print('Hello, world!')"
         expected_filename = "hello_world.py"
 
-        self.plugin.client.messages.create = lambda *args, **kwargs: MagicMock(
+        self.plugin.claude_client.messages.create = lambda *args, **kwargs: MagicMock(
             content=[
                 anthropic.types.TextBlock(type="text", text=expected_filename)
             ]
@@ -389,7 +389,7 @@ class TestClaudePlugin(unittest.TestCase):
         code = "function helloWorld() {\n    console.log('Hello, world!');\n}"
         expected_filename = "helloWorld.js"
 
-        self.plugin.client.messages.create = lambda *args, **kwargs: MagicMock(
+        self.plugin.claude_client.messages.create = lambda *args, **kwargs: MagicMock(
             content=[
                 anthropic.types.TextBlock(type="text", text=expected_filename)
             ]
@@ -403,7 +403,7 @@ class TestClaudePlugin(unittest.TestCase):
         code = "print('Hello, world!')"
         expected_filename = "hello_world.txt"
 
-        self.plugin.client.messages.create = lambda *args, **kwargs: MagicMock(
+        self.plugin.claude_client.messages.create = lambda *args, **kwargs: MagicMock(
             content=[
                 anthropic.types.TextBlock(type="text", text=expected_filename)
             ]
@@ -417,7 +417,7 @@ class TestClaudePlugin(unittest.TestCase):
         code = "def special_chars():\n    print('Hello, @world!')"
         expected_filename = "special_chars.py"
 
-        self.plugin.client.messages.create = lambda *args, **kwargs: MagicMock(
+        self.plugin.claude_client.messages.create = lambda *args, **kwargs: MagicMock(
             content=[
                 anthropic.types.TextBlock(type="text", text=expected_filename)
             ]
@@ -455,7 +455,7 @@ class TestClaudePlugin(unittest.TestCase):
 
     @patch('rplugin.python3.claude_plugin.open', new_callable=unittest.mock.mock_open, read_data=b"file data")
     @patch('rplugin.python3.claude_plugin.os.path.expanduser', side_effect=lambda x: x)
-    @patch('rplugin.python3.claude_plugin.mimetypes.guess_type', return_value=(None, None))
+    @patch('rplugin.python3.claude_plugin.mimetypes.guess_type', return_value=('image/jpeg', None))
     def test__process_content__unknown_file_type(self, mock_guess_type, mock_expanduser, mock_open):
         input_string = "Here is a file: <content>/path/to/file.unknown</content>"
         expected_output = [
@@ -464,7 +464,7 @@ class TestClaudePlugin(unittest.TestCase):
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": "application/octet-stream",
+                    "media_type": "image/jpeg",
                     "data": base64.b64encode(b"file data").decode('utf-8')
                 }
             }

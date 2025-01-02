@@ -4,7 +4,7 @@ Copyright (C) [2024] [P. Scott DeVos]
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
+the Free Software Foundation, either version 2 of the License, or
 (at your option) any later version.
 
 This program is distributed in the hope that it will be useful,
@@ -16,16 +16,18 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import json
-import pynvim
-import anthropic
 import base64
 import mimetypes
 import os
 import re
 import shlex
 from datetime import datetime
-from typing import Optional, List, Tuple
 from traceback import format_exc
+from typing import Callable, Optional, List, Tuple
+
+import anthropic
+import pynvim
+from httpx import Timeout
 
 
 # Pattern to match :b<buffer_number> with at least one surrounding whitespace
@@ -36,37 +38,55 @@ CONTENT_PATTERN = re.compile(r'<content>(.*?)</content>', re.DOTALL)
 # Maximum number of tokens Claude will return
 DEFAULT_MAX_TOKENS = 4096
 ABSOLUTE_MAX_TOKENS = 8192
-ABSOLUTE_MIN_TOKENS = 512
+ABSOLUTE_MIN_TOKENS = 128
 
 DEFAULT_TEMPERATURE = 0.25
+DEFAULT_TIMEOUT = 60.0
 
 # Maximum number of tokens to send to Claude
-ABSOLUTE_MIN_CONTEXT_TOKENS = 1024 * 200
-MAX_CONTEXT_TOKENS = ABSOLUTE_MIN_CONTEXT_TOKENS
+ABSOLUTE_MIN_CONTEXT_TOKENS = 1024
+ABSOLUTE_MAX_CONTEXT_TOKENS = 1024 * 200
+DEFAULT_MAX_CONTEXT_TOKENS = ABSOLUTE_MAX_CONTEXT_TOKENS
 
 SETTINGS_FILE = 'nvim_claude.json'
 
 DEFAULT_SYSTEM_PROMPT = """
-    Please format all responses with line breaks at 80 columns.
+    You are a highly skilled software engineer. Your task when asked to generate
+    code is to generate code that is:
+    - Clear and Readable: Use descriptive variable and function names, and
+      include comments where necessary to explain complex logic.
+    - Concise: Avoid unnecessary code and keep the implementation as simple
+      as possible.
+    - Well-Designed: Follow best practices for the language, including proper
+      use of data structures, error handling, and modular design.
+    - Efficient: Optimize for performance without sacrificing readability.
+    - Consistent: Adhere to the coding style and conventions of the language.
+
     The following applies only to code in your responses:
-        - While code should generally break at 80 columns, avoid breaking
-            lines if it would make the code awkward or less readable.
-        - Use standard language-specific indentation:
-            * 4 spaces for Python
-            * 2 spaces for JavaScript, Typescript, CSS, HTML, XML, and JSON
-            * Follow established conventions for other languages
-        - Separate code blocks from other text and from each other with
-            blank lines
-        - Code Quality Principles:
-            * Prioritize readability and clarity
-            * Use meaningful, descriptive variable and function names
-            * Write self-documenting code
-            * Include concise, informative comments when they add value
-        - Demonstrate language-specific best practices
-            - When providing multiple code examples:
-                * Show different approaches
-                * Highlight alternative implementations
-                * Explain trade-offs between approaches
+    - While code should generally break at 80 columns, avoid breaking
+        lines if it would make the code awkward or less readable.
+    - Use standard language-specific indentation:
+        * 4 spaces for Python
+        * 2 spaces for JavaScript, Typescript, CSS, HTML, XML, and JSON
+        * Follow established conventions for other languages
+    - Separate code blocks from other text and from each other with
+        blank lines
+    - Code Quality Principles:
+        * Prioritize readability and clarity
+        * Use meaningful, descriptive variable and function names
+        * Write self-documenting code
+        * Include concise, informative comments when they add value
+    - Demonstrate language-specific best practices
+        - When providing multiple code examples:
+            * Show different approaches
+            * Highlight alternative implementations
+            * Explain trade-offs between approaches
+
+    You are also a highly-intelligent, helpful assistant. If you are asked
+    to do something that is not code generation, you will do it.
+
+    Please format all responses with line breaks at 80 columns. Not just code
+    lines, but all lines. This is important!
 """
 
 
@@ -74,17 +94,18 @@ DEFAULT_SYSTEM_PROMPT = """
 class ClaudePlugin:
     def __init__(self, nvim):
         self.nvim = nvim
-        self.client = anthropic.Client(timeout=10.0)
+        self.buffer_filenames = {}
 
         # Default settings
         default_config = {
             "current_model": "claude-3-5-haiku-20241022",
-            "current_filename": None,
+            "filename_model": "claude-3-5-haiku-20241022",
             "max_tokens": DEFAULT_MAX_TOKENS,
-            "max_context_tokens": MAX_CONTEXT_TOKENS,
+            "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
             "truncate_conversation": True,
             "system_prompt": DEFAULT_SYSTEM_PROMPT,
             "temperature": DEFAULT_TEMPERATURE,
+            "timeout": DEFAULT_TIMEOUT,
         }
 
         # Load configuration from file
@@ -106,22 +127,26 @@ class ClaudePlugin:
 
         # Set attributes from the updated configuration
         self.current_model = config["current_model"]
-        self.current_filename = config["current_filename"]
+        self.filename_model = config["filename_model"]
         self.max_tokens = config["max_tokens"]
         self.max_context_tokens = config["max_context_tokens"]
         self.truncate_conversation = config["truncate_conversation"]
         self.system_prompt = config["system_prompt"]
         self.temperature = config["temperature"]
+        self.timeout = config["timeout"]
+        self.claude_client = anthropic.Client(
+            timeout=Timeout(10.0, read=self.timeout, write=self.timeout))
 
     def _save_attributes_to_file(self):
         attributes = {
             "current_model": self.current_model,
-            "current_filename": self.current_filename,
+            "filename_model": self.filename_model,
             "max_tokens": self.max_tokens,
             "max_context_tokens": self.max_context_tokens,
             "truncate_conversation": self.truncate_conversation,
             "system_prompt": self.system_prompt,
             "temperature": self.temperature,
+            "timeout": self.timeout,
         }
         config_dir = os.path.join(os.path.expanduser('~'), '.config', 'nvim')
         os.makedirs(config_dir, exist_ok=True)
@@ -180,7 +205,7 @@ class ClaudePlugin:
         # Tokenize the system prompt and first message because we have to
         # include a message or anthropic will throw an error
         system_prompt_tokens_and_first_message = \
-            self.client.beta.messages.count_tokens(
+            self.claude_client.beta.messages.count_tokens(
                 betas=["token-counting-2024-11-01"],
                 model=self.current_model,
                 system=self.system_prompt,
@@ -188,7 +213,7 @@ class ClaudePlugin:
             )
         # Tokenize each message and store the token counts
         message_tokens = [
-            self.client.beta.messages.count_tokens(
+            self.claude_client.beta.messages.count_tokens(
                 betas=["token-counting-2024-11-01"],
                 model=self.current_model,
                 system="",
@@ -238,8 +263,8 @@ class ClaudePlugin:
             f"{language}:\n{code}\n\n"
             "Respond with only the filename, no explanation."
         )
-        filename_response = self.client.messages.create(
-            model=self.current_model,
+        filename_response = self.claude_client.messages.create(
+            model=self.filename_model,
             messages=[{"role": "user", "content": filename_prompt}],
             max_tokens=100
         )
@@ -266,19 +291,36 @@ class ClaudePlugin:
             filepath = os.path.expanduser(filepath)
 
             try:
-                with open(filepath, 'rb') as file:
-                    content = file.read()
-                    media_type, _ = mimetypes.guess_type(filepath)
-
-                    result.append({
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type or "application/octet-stream",
-                            "data": base64.b64encode(content).decode('utf-8')
-                        }
-                    })
-
+                media_type, _ = mimetypes.guess_type(filepath)
+                if media_type and media_type.startswith('image'):
+                    with open(filepath, 'rb') as file:
+                        content = file.read()
+                        result.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": base64.b64encode(content).decode('utf-8')
+                            }
+                        })
+                elif media_type and media_type.startswith('video'):
+                    with open(filepath, 'rb') as file:
+                        content = file.read()
+                        result.append({
+                            "type": "video",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": base64.b64encode(content).decode('utf-8')
+                            }
+                        })
+                else:
+                    with open(filepath, 'r') as file:
+                        content = file.read()
+                        result.append({
+                            "type": "text",
+                            "text": f"```\n{content}\n```"
+                        })
             except (IOError, OSError) as e:
                 self.nvim.err_write(
                     f"Error reading file {filepath}: {e}\n")
@@ -348,11 +390,10 @@ class ClaudePlugin:
             wrapped_content = f"<user>\n{new_content}\n</user>"
             self.nvim.current.buffer[:] = wrapped_content.split('\n')
 
-    @pynvim.command('Cl', nargs='0', sync=True)
-    def claude_command(self, args: List[str]) -> None:
-
+    def do_completion(self, completion_method: Callable, args: List[str]) -> None:
         self._wrap_new_content_with_user_tags()
         buffer_content = '\n'.join(self.nvim.current.buffer[:])
+        buffer_number = self.nvim.current.buffer.number
 
         # Check for :b<buffer_number> pattern with at least one surrounding
         # whitespace and replace with buffer content
@@ -378,7 +419,6 @@ class ClaudePlugin:
                 "role": role,
                 "content": content
             })
-        is_continuation = True if len(messages) > 1 else False
 
         if self.truncate_conversation:
             truncated_messages = self._truncate_conversation(
@@ -390,12 +430,13 @@ class ClaudePlugin:
                 messages = truncated_messages
 
         try:
-            response = self.client.messages.create(
+            response = completion_method(
                 system=self.system_prompt,
                 model=self.current_model,
                 messages=messages,
                 max_tokens=self.max_tokens,
-                temperature=self.temperature
+                temperature=self.temperature,
+                timeout=Timeout(10.0, read=self.timeout, write=self.timeout)
             )
 
             formatted_response = self._format_response(response.content)
@@ -403,17 +444,20 @@ class ClaudePlugin:
             # Append response to buffer
             self.nvim.current.buffer.append(formatted_response.split('\n'))
 
-            # Get a filename if this is the first response and save after
-            # each response (turn)
-            if not is_continuation and not self.current_filename:
-                # Ask Claude for a filename
+            buffer_number = self.nvim.current.buffer.number
+            if self.buffer_filenames.get(buffer_number):
+                # Make sure filename is sanitized
+                sanitized_filename = shlex.quote(
+                    self.buffer_filenames[buffer_number])
+            else:
+                # Get a filename if we don't already have one by asking Claude
                 filename_prompt = """
                     Based on our conversation, suggest a descriptive filename
                     for saving this chat. Respond with only the filename,
                     no explanation. Keep the filename pithy and descriptive.
                     Extention should be .txt.
                 """
-                filename_response = self.client.messages.create(
+                filename_response = completion_method(
                     model=self.current_model,
                     messages=messages + [
                         {"role": "assistant", "content": response.content},
@@ -422,17 +466,15 @@ class ClaudePlugin:
                     max_tokens=100
                 )
 
-                self.current_filename = \
-                    self._get_filename_from_response(filename_response)
+                filename = self._get_filename_from_response(filename_response)
                 # Escape spaces and special characters in filename
-                sanitized_filename = shlex.quote(self.current_filename)
+                sanitized_filename = shlex.quote(filename)
                 sanitized_filename = datetime.now().strftime(
                     "%Y-%m-%d_%H-%M-%S_") + sanitized_filename
-                cmd = f'write! {sanitized_filename}'
-                self.nvim.out_write(f"Saving to {cmd}\n")
-                self.nvim.command(cmd)
-            elif self.current_filename:
-                self.nvim.command('write')
+            self.buffer_filenames[buffer_number] = sanitized_filename
+            self.nvim.out_write(f"Saving to {sanitized_filename}\n")
+            cmd = f'write! {sanitized_filename}'
+            self.nvim.command(cmd)
 
             # Move cursor to the last line of the buffer after appending response
             self.nvim.current.window.cursor = (
@@ -441,6 +483,10 @@ class ClaudePlugin:
         except Exception as e:
             self.nvim.err_write(
                 f"Error generating response:\n{format_exc()}\n")
+
+    @pynvim.command('Cl', nargs='0', sync=True)
+    def claude_command(self, args: List[str]) -> None:
+        return self.do_completion(self.claude_client.messages.create, args)
 
     @pynvim.command('Claude', nargs='0', sync=True)
     def claude_full_command(self, args: List[str]) -> None:
@@ -483,7 +529,7 @@ class ClaudePlugin:
     def claude_model_full_command(self, args: List[str]) -> None:
         return self.claude_model_command(args)
 
-    @pynvim.command('Bc', nargs='0', sync=True)
+    @pynvim.command('BC', nargs='0', sync=True)
     def buffer_code_command(self, args: List[str]) -> None:
         buffer_content = '\n'.join(self.nvim.current.buffer[:])
 
@@ -516,7 +562,7 @@ class ClaudePlugin:
     def buffer_code_full_command(self, args: List[str]) -> None:
         return self.buffer_code_command(args)
 
-    @pynvim.command('Wc', nargs='0', sync=True)
+    @pynvim.command('WC', nargs='0', sync=True)
     def write_code_command(self, args: List[str]) -> None:
         buffer_content = '\n'.join(self.nvim.current.buffer[:])
 
@@ -527,7 +573,7 @@ class ClaudePlugin:
 
         code_blocks = self._extract_code_blocks(last_response)
 
-        for i, (language, code) in enumerate(code_blocks):
+        for language, code in code_blocks:
             filename = self._generate_filename(language, code)
 
             try:
@@ -566,7 +612,7 @@ class ClaudePlugin:
     def copy_prompt_full_command(self, args: List[str]) -> None:
         return self.copy_prompt_command(args)
 
-    @pynvim.command('Rp', nargs='1', sync=True)
+    @pynvim.command('ReplacePrompt', nargs='1', sync=True)
     def replace_prompt_command(self, args: List[str]) -> None:
         """Replace the system prompt with the contents of the specified buffer."""
         try:
@@ -585,10 +631,6 @@ class ClaudePlugin:
             self.nvim.err_write(
                 f"Error replacing system prompt:\n{format_exc()}\n"
             )
-
-    @pynvim.command('ReplacePrompt', nargs='1', sync=True)
-    def replace_prompt_full_command(self, args: List[str]) -> None:
-        return self.replace_prompt_command(args)
 
     @pynvim.command('MT', nargs='?', sync=True)
     def max_tokens_command(self, args: List[str]) -> None:
@@ -661,9 +703,12 @@ class ClaudePlugin:
             pass
         elif args[0].lower() == 'defaults':
             self.current_model = "claude-3-5-haiku-20241022"
+            self.filename_model = "claude-3-5-haiku-20241022"
             self.max_tokens = DEFAULT_MAX_TOKENS
             self.truncate_conversation = True
-            self.system_prompt = DEFAULT_SYSTEM_PROMPT
+            self.max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
+            self.temperature = DEFAULT_TEMPERATURE
+            self.timeout = DEFAULT_TIMEOUT
             self._save_attributes_to_file()
             self.nvim.out_write("Settings restored to defaults.\n")
         elif args[0].lower() == 'save':
@@ -671,7 +716,10 @@ class ClaudePlugin:
             self.nvim.out_write("Settings saved.\n")
         elif args[0].find('=') != -1:
             setting, value = [s.strip() for s in args[0].split('=')]
-            if setting not in ['model', 'max_tokens', 'truncate', 'temperature']:
+            if setting not in [
+                'model', 'filename_model', 'max_tokens', 'max_context_tokens',
+                'truncate', 'temperature', 'timeout'
+            ]:
                 self.nvim.err_write(
                     f"Error: {setting} is not a valid setting.\n")
                 return
@@ -682,6 +730,13 @@ class ClaudePlugin:
                         f"Error: {value} is not a valid model.\n")
                     return
                 self.current_model = value
+            elif setting == 'filename_model':
+                value = value.strip()
+                if value not in self.get_claude_models():
+                    self.nvim.err_write(
+                        f"Error: {value} is not a valid model.\n")
+                    return
+                self.filename_model = value
             elif setting == 'max_tokens':
                 value = int(value)
                 if (value < ABSOLUTE_MIN_TOKENS or value > ABSOLUTE_MAX_TOKENS):
@@ -690,6 +745,16 @@ class ClaudePlugin:
                         f"{ABSOLUTE_MIN_TOKENS} and {ABSOLUTE_MAX_TOKENS}.\n")
                     return
                 self.max_tokens = value
+            elif setting == 'max_context_tokens':
+                value = int(value)
+                if (value < ABSOLUTE_MIN_CONTEXT_TOKENS or
+                        value > ABSOLUTE_MAX_CONTEXT_TOKENS):
+                    self.nvim.err_write(
+                        "Error: max context tokens must be between "
+                        f"{ABSOLUTE_MIN_CONTEXT_TOKENS} and "
+                        f"{ABSOLUTE_MAX_CONTEXT_TOKENS}.\n")
+                    return
+                self.max_context_tokens = value
             elif setting == 'truncate':
                 value = value.strip()
                 if value not in ['on', 'off']:
@@ -697,19 +762,36 @@ class ClaudePlugin:
                         "Error: truncate must be 'on' or 'off'.\n")
                     return
                 self.truncate_conversation = value == 'on'
+            elif setting == 'temperature':
+                value = float(value)
+                if value < 0.0 or value > 1.0:
+                    self.nvim.err_write(
+                        "Error: temperature must be between 0.0 and 1.0.\n")
+                    return
+                self.temperature = value
+            elif setting == 'timeout':
+                value = float(value)
+                if value < 0.0 or value > 600.0:  # 0 to 10 minutes
+                    self.nvim.err_write(
+                        "Error: timeout must be between 0.0 and 600.0.\n")
+                    return
+                self.timeout = value
         else:
             self.nvim.err_write(
                 "Invalid argument. Use 'defaults' or 'save' or "
-                "'model=...', 'max_tokens=...', 'truncate=...'\n")
+                "'model=...', 'filename_model=...', 'max_tokens=...', "
+                "'max_context_tokens=...', 'truncate=...', 'temperature=...', "
+                "'timeout=...'\n")
             return
         self.nvim.out_write(
             f"Current settings:\n"
             f"model: {self.current_model}\n"
+            f"filename_model: {self.filename_model}\n"
             f"max_tokens: {self.max_tokens}\n"
             f"max_context_tokens: {self.max_context_tokens}\n"
             f"truncate_conversation: {self.truncate_conversation}\n"
             f"temperature: {self.temperature}\n"
-            f"system_prompt: {self.system_prompt}\n"
+            f"timeout: {self.timeout}\n"
         )
 
     @pynvim.command('ClaudeSettings', nargs='?', sync=True)
