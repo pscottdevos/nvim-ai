@@ -171,16 +171,13 @@ class ClaudePlugin:
             if isinstance(block, anthropic.types.TextBlock):
                 text += block.text
             # Skip other block types for now
-
-        return f"\n<assistant>\n{text}\n</assistant>\n\n"
+        return text
 
     @staticmethod
     def _get_filename_from_response(response: anthropic.types.Message) -> str:
         """Get a filename from the response."""
         filename = (
             ClaudePlugin._format_response(response.content)
-            .replace('<assistant>', '')
-            .replace('</assistant>', '')
             .replace('\n', '')
             .strip()
         )
@@ -430,19 +427,29 @@ class ClaudePlugin:
                 messages = truncated_messages
 
         try:
-            response = completion_method(
+            response_stream = completion_method(
                 system=self.system_prompt,
                 model=self.current_model,
                 messages=messages,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
-                timeout=Timeout(10.0, read=self.timeout, write=self.timeout)
+                timeout=Timeout(10.0, read=self.timeout, write=self.timeout),
+                stream=True
             )
 
-            formatted_response = self._format_response(response.content)
-
-            # Append response to buffer
-            self.nvim.current.buffer.append(formatted_response.split('\n'))
+            self.nvim.current.buffer.append(["", "<assistant>", ""])
+            response_text = ""
+            for chunk in response_stream:
+                if chunk.type == "content_block_delta":
+                    response_text += chunk.delta.text
+                    lines = chunk.delta.text.split('\n')
+                    self.nvim.current.buffer[-1] += lines[0]
+                    if len(lines) > 1:
+                        self.nvim.current.buffer.append(lines[1:])
+                    # Move cursor to the last line of the buffer after appending each chunk
+                    self.nvim.current.window.cursor = (
+                        len(self.nvim.current.buffer), 0)
+            self.nvim.current.buffer.append(["", "</assistant>", "", ""])
 
             buffer_number = self.nvim.current.buffer.number
             if self.buffer_filenames.get(buffer_number):
@@ -458,9 +465,9 @@ class ClaudePlugin:
                     Extention should be .txt.
                 """
                 filename_response = completion_method(
-                    model=self.current_model,
+                    model=self.filename_model,
                     messages=messages + [
-                        {"role": "assistant", "content": response.content},
+                        {"role": "assistant", "content": response_text},
                         {"role": "user", "content": filename_prompt},
                     ],
                     max_tokens=100
@@ -484,11 +491,11 @@ class ClaudePlugin:
             self.nvim.err_write(
                 f"Error generating response:\n{format_exc()}\n")
 
-    @pynvim.command('Cl', nargs='0', sync=True)
+    @pynvim.command('Cl', nargs='0', sync=False)
     def claude_command(self, args: List[str]) -> None:
         return self.do_completion(self.claude_client.messages.create, args)
 
-    @pynvim.command('Claude', nargs='0', sync=True)
+    @pynvim.command('Claude', nargs='0', sync=False)
     def claude_full_command(self, args: List[str]) -> None:
         return self.claude_command(args)
 

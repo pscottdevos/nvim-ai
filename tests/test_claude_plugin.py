@@ -154,13 +154,13 @@ class TestClaudePlugin(unittest.TestCase):
             anthropic.types.TextBlock(type="text", text="Hello, world!"),
             anthropic.types.TextBlock(type="text", text="How are you?")
         ]
-        expected = "\n<assistant>\nHello, world!How are you?\n</assistant>\n\n"
+        expected = "Hello, world!How are you?"
         result = self.plugin._format_response(response)
         self.assertEqual(result, expected)
 
     def test__format_response__empty_response(self):
         response = []
-        expected = "\n<assistant>\n\n</assistant>\n\n"
+        expected = ""
         result = self.plugin._format_response(response)
         self.assertEqual(result, expected)
 
@@ -175,7 +175,7 @@ class TestClaudePlugin(unittest.TestCase):
                 type="tool_use"
             )
         ]
-        expected = "\n<assistant>\nHello, world!\n</assistant>\n\n"
+        expected = "Hello, world!"
         result = self.plugin._format_response(response)
         self.assertEqual(result, expected)
 
