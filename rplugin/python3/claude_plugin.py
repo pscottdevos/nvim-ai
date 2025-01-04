@@ -499,6 +499,10 @@ class ClaudePlugin:
     def claude_full_command(self, args: List[str]) -> None:
         return self.claude_command(args)
 
+    @pynvim.command('Completion', nargs='0', sync=False)
+    def claude_full_command(self, args: List[str]) -> None:
+        return self.claude_command(args)
+
     @pynvim.command('CM', nargs='?', sync=True)
     def claude_model_command(self, args: List[str]) -> None:
         """Change the current model to the one provided or list available
@@ -596,7 +600,7 @@ class ClaudePlugin:
     def write_code_full_command(self, args: List[str]) -> None:
         return self.write_code_command(args)
 
-    @pynvim.command('Cp', nargs='0', sync=True)
+    @pynvim.command('CP', nargs='0', sync=True)
     def copy_prompt_command(self, args: List[str]) -> None:
         """Copy the system prompt to a new buffer."""
         try:

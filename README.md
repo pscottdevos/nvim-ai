@@ -56,8 +56,8 @@ plugin without setting the `ANTHROPIC_API_KEY` environment variable.
 
 ### Prompt Management
 
-- `:CopyPrompt` (`:Cp`): Copy current system prompt to a new buffer
-- `:ReplacePrompt` (`:Rp`): Replace system prompt with buffer contents
+- `:CopyPrompt` (`:CP`): Copy current system prompt to a new buffer
+- `:ReplacePrompt`: Replace system prompt with buffer contents
 
 ### Token Management
 
