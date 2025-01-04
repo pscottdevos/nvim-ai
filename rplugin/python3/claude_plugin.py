@@ -29,6 +29,8 @@ import anthropic
 import pynvim
 from httpx import Timeout
 
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+
 
 # Pattern to match :b<buffer_number> with at least one surrounding whitespace
 BUFFER_PATTERN = re.compile(r'\s+:b(\d+)\s+')
@@ -183,18 +185,6 @@ class ClaudePlugin:
         )
         # Escape spaces and special characters in filename
         return shlex.quote(filename)
-
-    @staticmethod
-    def get_claude_models() -> List[str]:
-        """Get a list of available Anthropic models."""
-        models = [
-            "claude-3-5-sonnet-20240620",
-            "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240229",
-        ]
-        return models
 
     def _count_tokens(self, messages: List[dict]) -> Tuple[int, int]:
         if not messages:
@@ -490,6 +480,11 @@ class ClaudePlugin:
         except Exception as e:
             self.nvim.err_write(
                 f"Error generating response:\n{format_exc()}\n")
+
+    def get_claude_models(self) -> List[str]:
+        """Get a list of available Anthropic models."""
+        models = self.claude_client.models.list()
+        return [model.id for model in models.data]
 
     @pynvim.command('Cl', nargs='0', sync=False)
     def claude_command(self, args: List[str]) -> None:
