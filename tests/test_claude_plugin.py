@@ -599,6 +599,80 @@ class TestClaudePlugin(unittest.TestCase):
         self.assertIsNone(result)
         self.plugin.nvim.current.buffer.__setitem__.assert_not_called()
 
+    def test_replace_prompt_command_with_current_buffer(self):
+        self.plugin.nvim.current.buffer = MagicMock()
+        self.plugin.nvim.current.buffer.__getitem__.return_value = [
+            "New system prompt content."
+        ]
+        self.plugin.nvim.current.buffer.number = 1
+
+        mock_path = 'rplugin.python3.claude_plugin.ClaudePlugin._save_attributes_to_file'
+        with patch(mock_path) as mock_save_attributes:
+            self.plugin.replace_prompt_command([])
+
+        self.assertEqual(self.plugin.system_prompt,
+                         "New system prompt content.")
+        self.plugin.nvim.out_write.assert_called_once_with(
+            "System prompt replaced with contents of buffer 1.\n"
+        )
+        mock_save_attributes.assert_called_once()
+
+    def test_replace_prompt_command_with_specified_buffer(self):
+        buffer_mock = MagicMock()
+        buffer_mock.__getitem__.return_value = [
+            "New system prompt content from specified buffer."
+        ]
+        buffer_mock.number = 2
+
+        class BufferDict(dict):
+            def __iter__(self):
+                return iter(self.values())
+
+        self.plugin.nvim.buffers = BufferDict({2: buffer_mock})
+
+        mock_path = 'rplugin.python3.claude_plugin.ClaudePlugin._save_attributes_to_file'
+        with patch(mock_path) as mock_save_attributes:
+            self.plugin.replace_prompt_command([2])
+
+        self.assertEqual(self.plugin.system_prompt,
+                         "New system prompt content from specified buffer.")
+        self.plugin.nvim.out_write.assert_called_once_with(
+            "System prompt replaced with contents of buffer 2.\n"
+        )
+        mock_save_attributes.assert_called_once()
+
+    def test_replace_prompt_command_with_nonexistent_buffer(self):
+        class BufferDict(dict):
+            def __iter__(self):
+                return iter(self.values())
+
+        self.plugin.nvim.buffers = BufferDict({1: MagicMock()})
+
+        mock_path = 'rplugin.python3.claude_plugin.ClaudePlugin._save_attributes_to_file'
+        with patch(mock_path) as mock_save_attributes:
+            self.plugin.replace_prompt_command([99])
+
+        self.plugin.nvim.err_write.assert_called_once_with(
+            "Error: Buffer 99 does not exist.\n"
+        )
+        mock_save_attributes.assert_not_called()
+
+    def test_replace_prompt_command_with_exception(self):
+        self.plugin.nvim.current.buffer = MagicMock()
+        self.plugin.nvim.current.buffer.__getitem__.side_effect = Exception(
+            "Test exception")
+
+        mock_path = 'rplugin.python3.claude_plugin.ClaudePlugin._save_attributes_to_file'
+        with patch(mock_path) as mock_save_attributes:
+            self.plugin.replace_prompt_command([])
+
+        self.assertEqual(self.plugin.nvim.err_write.call_count, 1)
+        self.assertIn(
+            "Exception: Test exception",
+            self.plugin.nvim.err_write.call_args[0][0].splitlines()[-2]
+        )
+        mock_save_attributes.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
