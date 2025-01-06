@@ -622,18 +622,23 @@ class ClaudePlugin:
     def replace_prompt_command(self, args: List[str]) -> None:
         """Replace the system prompt with the contents of the specified buffer."""
         try:
-            if not args:
-                buffer = self.nvim.current.buffer
-                buffer_number = self.nvim.current.buffer.number
+            if args:
+                try:
+                    buffer_number = int(args[0])
+                    if buffer_number not in [b.number for b in self.nvim.buffers]:
+                        self.nvim.err_write(
+                            f"Error: Buffer {buffer_number} does not exist.\n")
+                        return
+                    buffer_content = '\n'.join(
+                        self.nvim.buffers[buffer_number][:])
+                except ValueError:
+                    filename = args[0]
+                    with open(filename, 'r') as f:
+                        buffer_content = f.read()
             else:
-                buffer_number = int(args[0])
-                if buffer_number not in [b.number for b in self.nvim.buffers]:
-                    self.nvim.err_write(
-                        f"Error: Buffer {buffer_number} does not exist.\n")
-                    return
-                buffer = self.nvim.buffers[buffer_number]
+                buffer_number = self.nvim.current.buffer.number
+                buffer_content = '\n'.join(self.nvim.current.buffer[:])
 
-            buffer_content = '\n'.join(buffer[:])
             self.system_prompt = buffer_content
             self.nvim.out_write(
                 f"System prompt replaced with contents of buffer {buffer_number}.\n")

@@ -673,6 +673,15 @@ class TestClaudePlugin(unittest.TestCase):
         )
         mock_save_attributes.assert_not_called()
 
+    def test_replace_prompt_command_with_file(self):
+        filename = "test_file.txt"
+        with open(filename, 'w') as f:
+            f.write("New system prompt content from file.")
+        self.plugin.replace_prompt_command([filename])
+        self.assertEqual(self.plugin.system_prompt,
+                         "New system prompt content from file.")
+        os.remove(filename)
+
 
 if __name__ == '__main__':
     unittest.main()
