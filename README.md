@@ -46,13 +46,13 @@ plugin without setting the `ANTHROPIC_API_KEY` environment variable.
 ### Conversation Management
 
 - `:Claude` (`:Cl`): Send current conversation to Claude
-- `:ClaudeModel` (`:Cm`): Select AI model
+- `:ClaudeModel` (`:CM`): Select AI model
 - `:ClaudeModels`: List available models
 
 ### Code Interaction
 
-- `:WriteCode` (`:Wc`): Extract and save code blocks from last response
-- `:BufferCode` (`:Bc`): Open code blocks in new buffers
+- `:WriteCode` (`:WC`): Extract and save code blocks from last response
+- `:BufferCode` (`:BC`): Open code blocks in new buffers
 
 ### Prompt Management
 
