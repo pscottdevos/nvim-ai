@@ -77,7 +77,7 @@
   const previousMousePosition = { x: 0, y: 0 };
   let isMouseDown = false;
   const rotationSpeed = { x: 0, y: 0 };
-  const damping = 0.95;
+  const damping = 0.5;
 
   // Helper function to get cell index with wrapping
   function getIndex(x, y) {
@@ -144,8 +144,8 @@
       const deltaX = e.clientX - previousMousePosition.x;
       const deltaY = e.clientY - previousMousePosition.y;
 
-      rotationSpeed.x = deltaY * 0.001;
-      rotationSpeed.y = deltaX * 0.001;
+      rotationSpeed.x = deltaY * 0.005;
+      rotationSpeed.y = deltaX * 0.005;
 
       previousMousePosition.x = e.clientX;
       previousMousePosition.y = e.clientY;
