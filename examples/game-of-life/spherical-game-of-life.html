@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Spherical Game of Life</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js">
+  </script>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: black;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+<script>
+  // Set up Three.js scene
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(
+    75,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000
+  );
+  const renderer = new THREE.WebGLRenderer();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  // Constants for the simulation
+  const SPHERE_RADIUS = 5;
+  const GRID_SIZE = 150; // Increased from 50 to 150 for higher resolution
+  const CELL_SIZE = (2 * Math.PI) / GRID_SIZE;
+
+  // Create cells array and particle system
+  let cells = new Array(GRID_SIZE * GRID_SIZE).fill(false);
+  const particles = new THREE.BufferGeometry();
+  const positions = [];
+  const colors = [];
+  const color = new THREE.Color();
+
+  // Initialize with random live cells
+  for (let i = 0; i < cells.length; i++) {
+    cells[i] = Math.random() > 0.85;
+    const theta = (i % GRID_SIZE) * CELL_SIZE;
+    const phi = Math.floor(i / GRID_SIZE) * CELL_SIZE;
+    
+    const x = SPHERE_RADIUS * Math.sin(phi) * Math.cos(theta);
+    const y = SPHERE_RADIUS * Math.cos(phi);
+    const z = SPHERE_RADIUS * Math.sin(phi) * Math.sin(theta);
+    
+    positions.push(x, y, z);
+    
+    color.setHSL(Math.random(), 1, 0.5);
+    colors.push(color.r, color.g, color.b);
+  }
+
+  particles.setAttribute('position', 
+    new THREE.Float32BufferAttribute(positions, 3));
+  particles.setAttribute('color', 
+    new THREE.Float32BufferAttribute(colors, 3));
+
+  const material = new THREE.PointsMaterial({
+    size: 0.05, // Reduced from 0.1 to 0.05
+    vertexColors: true
+  });
+
+  const pointCloud = new THREE.Points(particles, material);
+  scene.add(pointCloud);
+
+  camera.position.z = 10;
+
+  // Mouse control variables
+  const mousePosition = { x: 0, y: 0 };
+  const previousMousePosition = { x: 0, y: 0 };
+  let isMouseDown = false;
+  const rotationSpeed = { x: 0, y: 0 };
+  const damping = 0.95;
+
+  // Helper function to get cell index with wrapping
+  function getIndex(x, y) {
+    x = (x + GRID_SIZE) % GRID_SIZE;
+    y = (y + GRID_SIZE) % GRID_SIZE;
+    return y * GRID_SIZE + x;
+  }
+
+  // Get number of live neighbors for a cell
+  function countNeighbors(index) {
+    const x = index % GRID_SIZE;
+    const y = Math.floor(index / GRID_SIZE);
+    let count = 0;
+    
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (dx === 0 && dy === 0) continue;
+        const neighborIndex = getIndex(x + dx, y + dy);
+        if (cells[neighborIndex]) count++;
+      }
+    }
+    
+    return count;
+  }
+
+  // Update the Game of Life state
+  function updateLife() {
+    const newCells = [...cells];
+    
+    for (let i = 0; i < cells.length; i++) {
+      const neighbors = countNeighbors(i);
+      if (cells[i]) {
+        newCells[i] = neighbors === 2 || neighbors === 3;
+      } else {
+        newCells[i] = neighbors === 3;
+      }
+      
+      const colorAttribute = particles.attributes.color;
+      if (newCells[i]) {
+        color.setHSL((i / cells.length) + Date.now() * 0.0001, 1, 0.5);
+        colorAttribute.setXYZ(i, color.r, color.g, color.b);
+      } else {
+        colorAttribute.setXYZ(i, 0, 0, 0);
+      }
+    }
+    
+    particles.attributes.color.needsUpdate = true;
+    cells = newCells;
+  }
+
+  // Mouse event listeners
+  document.addEventListener('mousedown', (e) => {
+    isMouseDown = true;
+    previousMousePosition.x = e.clientX;
+    previousMousePosition.y = e.clientY;
+  });
+
+  document.addEventListener('mouseup', () => {
+    isMouseDown = false;
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (isMouseDown) {
+      const deltaX = e.clientX - previousMousePosition.x;
+      const deltaY = e.clientY - previousMousePosition.y;
+
+      rotationSpeed.x = deltaY * 0.001;
+      rotationSpeed.y = deltaX * 0.001;
+
+      previousMousePosition.x = e.clientX;
+      previousMousePosition.y = e.clientY;
+    }
+  });
+
+  // Animation loop
+  function animate() {
+    requestAnimationFrame(animate);
+    
+    if (isMouseDown) {
+      pointCloud.rotation.x += rotationSpeed.x;
+      pointCloud.rotation.y += rotationSpeed.y;
+    } else {
+      rotationSpeed.x *= damping;
+      rotationSpeed.y *= damping;
+      
+      pointCloud.rotation.x += rotationSpeed.x;
+      pointCloud.rotation.y += rotationSpeed.y;
+      
+      if (Math.abs(rotationSpeed.x) < 0.0001) rotationSpeed.x = 0;
+      if (Math.abs(rotationSpeed.y) < 0.0001) rotationSpeed.y = 0;
+    }
+    
+    updateLife();
+    renderer.render(scene, camera);
+  }
+
+  // Handle window resizing
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  animate();
+</script>
+</body>
+</html>

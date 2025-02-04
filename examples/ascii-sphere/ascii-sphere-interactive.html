@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Mouse-Controlled ASCII Sphere</title>
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      background: black;
+      overflow: hidden;
+    }
+    canvas {
+      background: black;
+      cursor: move;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // Configuration
+    const width = 800;
+    const height = 800;
+    const radius = 300;
+    const points = [];
+    const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ,.!? ";
+    const numPoints = 500;
+    const message = "Hello, World!";
+    const lineGrowDuration = 500; // 2 seconds per line
+
+    // Animation state
+    let messagePoints = [];
+    let currentLineStart = 0;
+    let currentLineEnd = 0;
+    let lineStartTime = 0;
+    let currentCharIndex = 0;
+    let animationStartTime = 0;
+    const initialDelay = 3000; // 3 seconds delay
+
+    // Mouse interaction variables
+    let isMouseDown = false;
+    let currentRotationX = 0;
+    let currentRotationY = 0;
+
+    // Set canvas size
+    canvas.width = width;
+    canvas.height = height;
+
+    // Generate points on a sphere
+    for (let i = 0; i < numPoints; i++) {
+      const theta = Math.random() * 2 * Math.PI;
+      const phi = Math.acos(2 * Math.random() - 1);
+      
+      const point = {
+        x: radius * Math.sin(phi) * Math.cos(theta),
+        y: radius * Math.sin(phi) * Math.sin(theta),
+        z: radius * Math.cos(phi),
+        char: chars[Math.floor(Math.random() * chars.length)],
+        isMessageChar: false,
+        messageIndex: -1
+      };
+      points.push(point);
+    }
+
+    // Initialize message points
+    function initializeMessage() {
+      messagePoints = [];
+      const usedIndices = new Set();
+
+      for (let i = 0; i < message.length; i++) {
+        // Find a random point that isn't used yet
+        let pointIndex;
+        do {
+          pointIndex = Math.floor(Math.random() * points.length);
+        } while (usedIndices.has(pointIndex));
+
+        usedIndices.add(pointIndex);
+        points[pointIndex].char = message[i];
+        points[pointIndex].isMessageChar = true;
+        points[pointIndex].messageIndex = i;
+        messagePoints.push(points[pointIndex]);
+      }
+
+      currentCharIndex = 0;
+      lineStartTime = performance.now();
+    }
+
+    // Mouse event listeners
+    canvas.addEventListener('mousedown', () => {
+      isMouseDown = true;
+    });
+
+    canvas.addEventListener('mouseup', () => {
+      isMouseDown = false;
+      currentRotationX = 0;
+      currentRotationY = 0;
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      isMouseDown = false;
+      currentRotationX = 0;
+      currentRotationY = 0;
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (isMouseDown) {
+        currentRotationX = -e.movementY * 0.005;
+        currentRotationY = -e.movementX * 0.005;
+      } else {
+        currentRotationX = 0;
+        currentRotationY = 0;
+      }
+    });
+
+    function rotatePoint(point) {
+      if (currentRotationX || currentRotationY) {
+        let y = point.y * Math.cos(currentRotationX) - 
+                point.z * Math.sin(currentRotationX);
+        let z = point.y * Math.sin(currentRotationX) + 
+                point.z * Math.cos(currentRotationX);
+        point.y = y;
+        point.z = z;
+
+        let x = point.x * Math.cos(currentRotationY) - 
+                point.z * Math.sin(currentRotationY);
+        z = point.x * Math.sin(currentRotationY) + 
+            point.z * Math.cos(currentRotationY);
+        point.x = x;
+        point.z = z;
+      }
+    }
+
+    function drawLine(startPoint, endPoint, progress) {
+      const scale = 800;
+      const x1 = startPoint.x * (scale / (scale - startPoint.z)) + width / 2;
+      const y1 = startPoint.y * (scale / (scale - startPoint.z)) + height / 2;
+      const x2 = endPoint.x * (scale / (scale - endPoint.z)) + width / 2;
+      const y2 = endPoint.y * (scale / (scale - endPoint.z)) + height / 2;
+
+      const currentX = x1 + (x2 - x1) * progress;
+      const currentY = y1 + (y2 - y1) * progress;
+
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(currentX, currentY);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    function render() {
+      const currentTime = performance.now();
+      // Check if we're still in initial delay
+      if (currentTime - animationStartTime < initialDelay) {
+        requestAnimationFrame(render);
+        return;
+      }
+ 
+      // Adjust timing to account for delay
+      const timeSinceStart = currentTime - lineStartTime;
+      const progress = Math.min(timeSinceStart / lineGrowDuration, 1);
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.font = '24px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      // Sort points by z-coordinate for proper depth rendering
+      const sortedPoints = [...points].sort((a, b) => b.z - a.z);
+
+      // Draw all points
+      sortedPoints.forEach(point => {
+        const scale = 800 / (800 - point.z);
+        const x = point.x * scale + width / 2;
+        const y = point.y * scale + height / 2;
+
+        const brightness = Math.round(
+          64 + ((point.z + radius) / (2 * radius)) * (255 - 64)
+        );
+        
+        if (point.isMessageChar) {
+          // If this is a message character, check if it should be red
+          if (point.messageIndex <= currentCharIndex) {
+            ctx.fillStyle = 'rgb(255, 0, 0)'; // Red for active characters
+          } else {
+            ctx.fillStyle = 'rgb(255, 255, 255)'; // White for future characters
+          }
+        } else {
+          ctx.fillStyle = `rgb(${brightness},${brightness},${brightness})`;
+        }
+        
+        ctx.fillText(point.char, x, y);
+      });
+
+      // Draw lines between message characters
+      for (let i = 0; i < currentCharIndex; i++) {
+        drawLine(messagePoints[i], messagePoints[i + 1], 1);
+      }
+
+      // Draw current growing line
+      if (currentCharIndex < messagePoints.length - 1) {
+        drawLine(
+          messagePoints[currentCharIndex],
+          messagePoints[currentCharIndex + 1],
+          progress
+        );
+
+        if (progress >= 1) {
+          currentCharIndex++;
+          lineStartTime = currentTime;
+        }
+      }
+
+      // Apply rotation to all points
+      points.forEach(rotatePoint);
+
+      requestAnimationFrame(render);
+    }
+
+    // Start the animation
+    initializeMessage();
+    animationStartTime = performance.now();
+    lineStartTime = animationStartTime + initialDelay;
+    render();
+  </script>
+</body>
+</html>
+
+
