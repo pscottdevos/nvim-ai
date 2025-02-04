@@ -2,6 +2,8 @@
 <html>
 <head>
   <title>Spherical Game of Life</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, 
+    maximum-scale=1.0, user-scalable=no">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js">
   </script>
   <style>
@@ -31,7 +33,7 @@
 
   // Constants for the simulation
   const SPHERE_RADIUS = 5;
-  const GRID_SIZE = 150; // Increased from 50 to 150 for higher resolution
+  const GRID_SIZE = 150;
   const CELL_SIZE = (2 * Math.PI) / GRID_SIZE;
 
   // Create cells array and particle system
@@ -63,7 +65,7 @@
     new THREE.Float32BufferAttribute(colors, 3));
 
   const material = new THREE.PointsMaterial({
-    size: 0.05, // Reduced from 0.1 to 0.05
+    size: 0.05,
     vertexColors: true
   });
 
@@ -72,10 +74,9 @@
 
   camera.position.z = 10;
 
-  // Mouse control variables
-  const mousePosition = { x: 0, y: 0 };
-  const previousMousePosition = { x: 0, y: 0 };
-  let isMouseDown = false;
+  // Interaction control variables
+  let isInteracting = false;
+  const previousPosition = { x: 0, y: 0 };
   const rotationSpeed = { x: 0, y: 0 };
   const damping = 0.5;
 
@@ -128,35 +129,73 @@
     cells = newCells;
   }
 
-  // Mouse event listeners
-  document.addEventListener('mousedown', (e) => {
-    isMouseDown = true;
-    previousMousePosition.x = e.clientX;
-    previousMousePosition.y = e.clientY;
-  });
+  // Prevent default touch behavior
+  document.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+  }, { passive: false });
 
-  document.addEventListener('mouseup', () => {
-    isMouseDown = false;
-  });
+  document.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+  }, { passive: false });
 
-  document.addEventListener('mousemove', (e) => {
-    if (isMouseDown) {
-      const deltaX = e.clientX - previousMousePosition.x;
-      const deltaY = e.clientY - previousMousePosition.y;
-
-      rotationSpeed.x = deltaY * 0.005;
-      rotationSpeed.y = deltaX * 0.005;
-
-      previousMousePosition.x = e.clientX;
-      previousMousePosition.y = e.clientY;
+  // Helper to get position from either mouse or touch event
+  function getEventPosition(e) {
+    if (e.type.startsWith('touch')) {
+      return {
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY
+      };
     }
-  });
+    return {
+      x: e.clientX,
+      y: e.clientY
+    };
+  }
+
+  // Start interaction
+  function handleStart(e) {
+    isInteracting = true;
+    const pos = getEventPosition(e);
+    previousPosition.x = pos.x;
+    previousPosition.y = pos.y;
+  }
+
+  // End interaction
+  function handleEnd() {
+    isInteracting = false;
+  }
+
+  // Handle movement
+  function handleMove(e) {
+    if (!isInteracting) return;
+    
+    const pos = getEventPosition(e);
+    const deltaX = pos.x - previousPosition.x;
+    const deltaY = pos.y - previousPosition.y;
+
+    rotationSpeed.x = deltaY * 0.005;
+    rotationSpeed.y = deltaX * 0.005;
+
+    previousPosition.x = pos.x;
+    previousPosition.y = pos.y;
+  }
+
+  // Add event listeners for both mouse and touch
+  document.addEventListener('mousedown', handleStart);
+  document.addEventListener('mouseup', handleEnd);
+  document.addEventListener('mousemove', handleMove);
+  document.addEventListener('mouseleave', handleEnd);
+
+  document.addEventListener('touchstart', handleStart);
+  document.addEventListener('touchend', handleEnd);
+  document.addEventListener('touchcancel', handleEnd);
+  document.addEventListener('touchmove', handleMove);
 
   // Animation loop
   function animate() {
     requestAnimationFrame(animate);
     
-    if (isMouseDown) {
+    if (isInteracting) {
       pointCloud.rotation.x += rotationSpeed.x;
       pointCloud.rotation.y += rotationSpeed.y;
     } else {

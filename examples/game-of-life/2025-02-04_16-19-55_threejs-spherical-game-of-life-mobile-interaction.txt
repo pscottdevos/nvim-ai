@@ -1,0 +1,692 @@
+<user>
+Can you change this code so that the mouse bits also work on mobile?
+
+<content>
+/home/pscottdv/repos/nvim-claude/examples/game-of-life/spherical-game-of-life.html
+</content>
+</user>
+
+<assistant>
+I'll modify the code to handle both mouse and touch events, allowing the
+spherical Game of Life to be interactive on mobile devices. Here are the key
+changes needed:
+
+1. Add touch event listeners
+2. Handle touch events similarly to mouse events
+3. Prevent default touch behaviors to avoid scrolling
+4. Use clientX/clientY or touches[0] coordinates as appropriate
+
+Here's the modified event handling code (replace the mouse event listeners with
+this):
+
+```javascript
+// Track interaction state
+let isInteracting = false;
+let previousPosition = { x: 0, y: 0 };
+
+// Prevent default touch behavior to avoid scrolling
+document.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+}, { passive: false });
+
+document.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+}, { passive: false });
+
+// Start interaction
+function handleStart(e) {
+  isInteracting = true;
+  const pos = getEventPosition(e);
+  previousPosition.x = pos.x;
+  previousPosition.y = pos.y;
+}
+
+// End interaction
+function handleEnd() {
+  isInteracting = false;
+}
+
+// Handle movement
+function handleMove(e) {
+  if (!isInteracting) return;
+  
+  const pos = getEventPosition(e);
+  const deltaX = pos.x - previousPosition.x;
+  const deltaY = pos.y - previousPosition.y;
+
+  rotationSpeed.x = deltaY * 0.005;
+  rotationSpeed.y = deltaX * 0.005;
+
+  previousPosition.x = pos.x;
+  previousPosition.y = pos.y;
+}
+
+// Helper to get position from either mouse or touch event
+function getEventPosition(e) {
+  if (e.type.startsWith('touch')) {
+    return {
+      x: e.touches[0].clientX,
+      y: e.touches[0].clientY
+    };
+  }
+  return {
+    x: e.clientX,
+    y: e.clientY
+  };
+}
+
+// Add event listeners for both mouse and touch
+document.addEventListener('mousedown', handleStart);
+document.addEventListener('mouseup', handleEnd);
+document.addEventListener('mousemove', handleMove);
+document.addEventListener('mouseleave', handleEnd);
+
+document.addEventListener('touchstart', handleStart);
+document.addEventListener('touchend', handleEnd);
+document.addEventListener('touchcancel', handleEnd);
+document.addEventListener('touchmove', handleMove);
+```
+
+Then update the animation loop to use `isInteracting` instead of `isMouseDown`:
+
+```javascript
+function animate() {
+  requestAnimationFrame(animate);
+  
+  if (isInteracting) {
+    pointCloud.rotation.x += rotationSpeed.x;
+    pointCloud.rotation.y += rotationSpeed.y;
+  } else {
+    rotationSpeed.x *= damping;
+    rotationSpeed.y *= damping;
+    
+    pointCloud.rotation.x += rotationSpeed.x;
+    pointCloud.rotation.y += rotationSpeed.y;
+    
+    if (Math.abs(rotationSpeed.x) < 0.0001) rotationSpeed.x = 0;
+    if (Math.abs(rotationSpeed.y) < 0.0001) rotationSpeed.y = 0;
+  }
+  
+  updateLife();
+  renderer.render(scene, camera);
+}
+```
+
+Additionally, you might want to add this meta tag in the head section for better
+mobile viewport handling:
+
+```html
+<meta name="viewport" content="width=device-width, initial-scale=1.0, 
+  maximum-scale=1.0, user-scalable=no">
+```
+
+These changes will make the visualization fully interactive on both desktop and
+mobile devices. The sphere can be rotated by dragging with either a mouse or
+finger, and the rotation will have the same smooth damping effect on both
+platforms.
+
+The key improvements are:
+- Unified handling of mouse and touch events
+- Prevention of default touch behaviors that could interfere with the interaction
+- Proper touch event coordinate handling
+- Viewport configuration for mobile devices
+- Smooth interaction regardless of input method
+
+</assistant>
+
+<user>
+Could you just go ahead and put it together for me?
+</user>
+
+<assistant>
+Here's the complete, working code with all the mobile interactions
+integrated:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Spherical Game of Life</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, 
+    maximum-scale=1.0, user-scalable=no">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js">
+  </script>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: black;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+<script>
+  // Set up Three.js scene
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(
+    75,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000
+  );
+  const renderer = new THREE.WebGLRenderer();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  // Constants for the simulation
+  const SPHERE_RADIUS = 5;
+  const GRID_SIZE = 150;
+  const CELL_SIZE = (2 * Math.PI) / GRID_SIZE;
+
+  // Create cells array and particle system
+  let cells = new Array(GRID_SIZE * GRID_SIZE).fill(false);
+  const particles = new THREE.BufferGeometry();
+  const positions = [];
+  const colors = [];
+  const color = new THREE.Color();
+
+  // Initialize with random live cells
+  for (let i = 0; i < cells.length; i++) {
+    cells[i] = Math.random() > 0.85;
+    const theta = (i % GRID_SIZE) * CELL_SIZE;
+    const phi = Math.floor(i / GRID_SIZE) * CELL_SIZE;
+    
+    const x = SPHERE_RADIUS * Math.sin(phi) * Math.cos(theta);
+    const y = SPHERE_RADIUS * Math.cos(phi);
+    const z = SPHERE_RADIUS * Math.sin(phi) * Math.sin(theta);
+    
+    positions.push(x, y, z);
+    
+    color.setHSL(Math.random(), 1, 0.5);
+    colors.push(color.r, color.g, color.b);
+  }
+
+  particles.setAttribute('position', 
+    new THREE.Float32BufferAttribute(positions, 3));
+  particles.setAttribute('color', 
+    new THREE.Float32BufferAttribute(colors, 3));
+
+  const material = new THREE.PointsMaterial({
+    size: 0.05,
+    vertexColors: true
+  });
+
+  const pointCloud = new THREE.Points(particles, material);
+  scene.add(pointCloud);
+
+  camera.position.z = 10;
+
+  // Interaction control variables
+  let isInteracting = false;
+  const previousPosition = { x: 0, y: 0 };
+  const rotationSpeed = { x: 0, y: 0 };
+  const damping = 0.5;
+
+  // Helper function to get cell index with wrapping
+  function getIndex(x, y) {
+    x = (x + GRID_SIZE) % GRID_SIZE;
+    y = (y + GRID_SIZE) % GRID_SIZE;
+    return y * GRID_SIZE + x;
+  }
+
+  // Get number of live neighbors for a cell
+  function countNeighbors(index) {
+    const x = index % GRID_SIZE;
+    const y = Math.floor(index / GRID_SIZE);
+    let count = 0;
+    
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (dx === 0 && dy === 0) continue;
+        const neighborIndex = getIndex(x + dx, y + dy);
+        if (cells[neighborIndex]) count++;
+      }
+    }
+    
+    return count;
+  }
+
+  // Update the Game of Life state
+  function updateLife() {
+    const newCells = [...cells];
+    
+    for (let i = 0; i < cells.length; i++) {
+      const neighbors = countNeighbors(i);
+      if (cells[i]) {
+        newCells[i] = neighbors === 2 || neighbors === 3;
+      } else {
+        newCells[i] = neighbors === 3;
+      }
+      
+      const colorAttribute = particles.attributes.color;
+      if (newCells[i]) {
+        color.setHSL((i / cells.length) + Date.now() * 0.0001, 1, 0.5);
+        colorAttribute.setXYZ(i, color.r, color.g, color.b);
+      } else {
+        colorAttribute.setXYZ(i, 0, 0, 0);
+      }
+    }
+    
+    particles.attributes.color.needsUpdate = true;
+    cells = newCells;
+  }
+
+  // Prevent default touch behavior
+  document.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+  }, { passive: false });
+
+  // Helper to get position from either mouse or touch event
+  function getEventPosition(e) {
+    if (e.type.startsWith('touch')) {
+      return {
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY
+      };
+    }
+    return {
+      x: e.clientX,
+      y: e.clientY
+    };
+  }
+
+  // Start interaction
+  function handleStart(e) {
+    isInteracting = true;
+    const pos = getEventPosition(e);
+    previousPosition.x = pos.x;
+    previousPosition.y = pos.y;
+  }
+
+  // End interaction
+  function handleEnd() {
+    isInteracting = false;
+  }
+
+  // Handle movement
+  function handleMove(e) {
+    if (!isInteracting) return;
+    
+    const pos = getEventPosition(e);
+    const deltaX = pos.x - previousPosition.x;
+    const deltaY = pos.y - previousPosition.y;
+
+    rotationSpeed.x = deltaY * 0.005;
+    rotationSpeed.y = deltaX * 0.005;
+
+    previousPosition.x = pos.x;
+    previousPosition.y = pos.y;
+  }
+
+  // Add event listeners for both mouse and touch
+  document.addEventListener('mousedown', handleStart);
+  document.addEventListener('mouseup', handleEnd);
+  document.addEventListener('mousemove', handleMove);
+  document.addEventListener('mouseleave', handleEnd);
+
+  document.addEventListener('touchstart', handleStart);
+  document.addEventListener('touchend', handleEnd);
+  document.addEventListener('touchcancel', handleEnd);
+  document.addEventListener('touchmove', handleMove);
+
+  // Animation loop
+  function animate() {
+    requestAnimationFrame(animate);
+    
+    if (isInteracting) {
+      pointCloud.rotation.x += rotationSpeed.x;
+      pointCloud.rotation.y += rotationSpeed.y;
+    } else {
+      rotationSpeed.x *= damping;
+      rotationSpeed.y *= damping;
+      
+      pointCloud.rotation.x += rotationSpeed.x;
+      pointCloud.rotation.y += rotationSpeed.y;
+      
+      if (Math.abs(rotationSpeed.x) < 0.0001) rotationSpeed.x = 0;
+      if (Math.abs(rotationSpeed.y) < 0.0001) rotationSpeed.y = 0;
+    }
+    
+    updateLife();
+    renderer.render(scene, camera);
+  }
+
+  // Handle window resizing
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  animate();
+</script>
+</body>
+</html>
+```
+
+This version should work smoothly on both desktop and mobile devices. You can:
+- Rotate the sphere by dragging with a mouse on desktop
+- Rotate the sphere by dragging with a finger on mobile devices
+- See the smooth damping effect when releasing
+- View the Game of Life animation running on the sphere's surface
+
+The viewport meta tag ensures proper scaling on mobile devices, and the touch
+event handlers prevent unwanted scrolling or zooming while interacting with the
+visualization.
+
+</assistant>
+
+<user>
+Please do the same for
+
+<content>
+/home/pscottdv/repos/nvim-claude/examples/ascii-sphere/ascii-sphere-interactive.html
+</content>
+</user>
+
+
+
+<assistant>
+Here's the modified version with both mouse and touch controls:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Interactive ASCII Sphere</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, 
+    maximum-scale=1.0, user-scalable=no">
+  <style>
+    body {
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      background: black;
+      overflow: hidden;
+      touch-action: none;
+    }
+    canvas {
+      background: black;
+      cursor: move;
+      touch-action: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // Configuration
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const radius = Math.min(width, height) * 0.35; // Responsive radius
+    const points = [];
+    const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ,.!? ";
+    const numPoints = 500;
+    const message = "Hello, World!";
+    const lineGrowDuration = 500;
+
+    // Animation state
+    let messagePoints = [];
+    let currentLineStart = 0;
+    let currentLineEnd = 0;
+    let lineStartTime = 0;
+    let currentCharIndex = 0;
+    let animationStartTime = 0;
+    const initialDelay = 0;
+
+    // Interaction variables
+    let isInteracting = false;
+    let currentRotationX = 0;
+    let currentRotationY = 0;
+    let lastX = 0;
+    let lastY = 0;
+
+    // Set canvas size
+    canvas.width = width;
+    canvas.height = height;
+
+    // Prevent default touch behaviors
+    document.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+    }, { passive: false });
+
+    document.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+    }, { passive: false });
+
+    // Generate points on a sphere
+    for (let i = 0; i < numPoints; i++) {
+      const theta = Math.random() * 2 * Math.PI;
+      const phi = Math.acos(2 * Math.random() - 1);
+      
+      const point = {
+        x: radius * Math.sin(phi) * Math.cos(theta),
+        y: radius * Math.sin(phi) * Math.sin(theta),
+        z: radius * Math.cos(phi),
+        char: chars[Math.floor(Math.random() * chars.length)],
+        isMessageChar: false,
+        messageIndex: -1
+      };
+      points.push(point);
+    }
+
+    // Initialize message points
+    function initializeMessage() {
+      messagePoints = [];
+      const usedIndices = new Set();
+
+      for (let i = 0; i < message.length; i++) {
+        let pointIndex;
+        do {
+          pointIndex = Math.floor(Math.random() * points.length);
+        } while (usedIndices.has(pointIndex));
+
+        usedIndices.add(pointIndex);
+        points[pointIndex].char = message[i];
+        points[pointIndex].isMessageChar = true;
+        points[pointIndex].messageIndex = i;
+        messagePoints.push(points[pointIndex]);
+      }
+
+      currentCharIndex = 0;
+      lineStartTime = performance.now();
+    }
+
+    // Helper to get position from either mouse or touch event
+    function getEventPosition(e) {
+      if (e.type.startsWith('touch')) {
+        return {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY
+        };
+      }
+      return {
+        x: e.clientX,
+        y: e.clientY
+      };
+    }
+
+    // Start interaction
+    function handleStart(e) {
+      isInteracting = true;
+      const pos = getEventPosition(e);
+      lastX = pos.x;
+      lastY = pos.y;
+    }
+
+    // End interaction
+    function handleEnd() {
+      isInteracting = false;
+      currentRotationX = 0;
+      currentRotationY = 0;
+    }
+
+    // Handle movement
+    function handleMove(e) {
+      if (!isInteracting) return;
+      
+      const pos = getEventPosition(e);
+      const deltaX = pos.x - lastX;
+      const deltaY = pos.y - lastY;
+
+      currentRotationX = -deltaY * 0.005;
+      currentRotationY = -deltaX * 0.005;
+
+      lastX = pos.x;
+      lastY = pos.y;
+    }
+
+    // Add event listeners for both mouse and touch
+    canvas.addEventListener('mousedown', handleStart);
+    canvas.addEventListener('mouseup', handleEnd);
+    canvas.addEventListener('mousemove', handleMove);
+    canvas.addEventListener('mouseleave', handleEnd);
+
+    canvas.addEventListener('touchstart', handleStart);
+    canvas.addEventListener('touchend', handleEnd);
+    canvas.addEventListener('touchcancel', handleEnd);
+    canvas.addEventListener('touchmove', handleMove);
+
+    function rotatePoint(point) {
+      if (currentRotationX || currentRotationY) {
+        let y = point.y * Math.cos(currentRotationX) - 
+                point.z * Math.sin(currentRotationX);
+        let z = point.y * Math.sin(currentRotationX) + 
+                point.z * Math.cos(currentRotationX);
+        point.y = y;
+        point.z = z;
+
+        let x = point.x * Math.cos(currentRotationY) - 
+                point.z * Math.sin(currentRotationY);
+        z = point.x * Math.sin(currentRotationY) + 
+            point.z * Math.cos(currentRotationY);
+        point.x = x;
+        point.z = z;
+      }
+    }
+
+    function drawLine(startPoint, endPoint, progress) {
+      const scale = 800;
+      const x1 = startPoint.x * (scale / (scale - startPoint.z)) + width / 2;
+      const y1 = startPoint.y * (scale / (scale - startPoint.z)) + height / 2;
+      const x2 = endPoint.x * (scale / (scale - endPoint.z)) + width / 2;
+      const y2 = endPoint.y * (scale / (scale - endPoint.z)) + height / 2;
+
+      const currentX = x1 + (x2 - x1) * progress;
+      const currentY = y1 + (y2 - y1) * progress;
+
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(currentX, currentY);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    function render() {
+      const currentTime = performance.now();
+      if (currentTime - animationStartTime < initialDelay) {
+        requestAnimationFrame(render);
+        return;
+      }
+ 
+      const timeSinceStart = currentTime - lineStartTime;
+      const progress = Math.min(timeSinceStart / lineGrowDuration, 1);
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.font = '24px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const sortedPoints = [...points].sort((a, b) => b.z - a.z);
+
+      sortedPoints.forEach(point => {
+        const scale = 800 / (800 - point.z);
+        const x = point.x * scale + width / 2;
+        const y = point.y * scale + height / 2;
+
+        const brightness = Math.round(
+          64 + ((point.z + radius) / (2 * radius)) * (255 - 64)
+        );
+        
+        if (point.isMessageChar) {
+          if (point.messageIndex <= currentCharIndex) {
+            ctx.fillStyle = 'rgb(255, 0, 0)';
+          } else {
+            ctx.fillStyle = 'rgb(255, 255, 255)';
+          }
+        } else {
+          ctx.fillStyle = `rgb(${brightness},${brightness},${brightness})`;
+        }
+        
+        ctx.fillText(point.char, x, y);
+      });
+
+      for (let i = 0; i < currentCharIndex; i++) {
+        drawLine(messagePoints[i], messagePoints[i + 1], 1);
+      }
+
+      if (currentCharIndex < messagePoints.length - 1) {
+        drawLine(
+          messagePoints[currentCharIndex],
+          messagePoints[currentCharIndex + 1],
+          progress
+        );
+
+        if (progress >= 1) {
+          currentCharIndex++;
+          lineStartTime = currentTime;
+        }
+      }
+
+      points.forEach(rotatePoint);
+
+      requestAnimationFrame(render);
+    }
+
+    // Handle window resizing
+    window.addEventListener('resize', () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    });
+
+    // Start the animation
+    initializeMessage();
+    animationStartTime = performance.now();
+    lineStartTime = animationStartTime + initialDelay;
+    render();
+  </script>
+</body>
+</html>
+```
+
+Key changes made:
+
+1. Added touch event handling and prevention of default touch behaviors
+2. Made the canvas size responsive to the window size
+3. Added viewport meta tag for better mobile display
+4. Changed interaction handling to work with both mouse and touch events
+5. Made the sphere radius responsive to screen size
+6. Added `touch-action: none` to prevent default touch behaviors
+7. Unified mouse and touch event handling under common functions
+8. Added window resize handling
+9. Changed interaction state tracking from `isMouseDown` to `isInteracting`
+
+The sphere should now be fully interactive on both desktop and mobile devices,
+with smooth rotation controls using either mouse or touch input.
+
+</assistant>
+
+

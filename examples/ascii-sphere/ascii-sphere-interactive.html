@@ -1,7 +1,9 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Mouse-Controlled ASCII Sphere</title>
+  <title>Interactive ASCII Sphere</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, 
+    maximum-scale=1.0, user-scalable=no">
   <style>
     body {
       margin: 0;
@@ -11,10 +13,12 @@
       min-height: 100vh;
       background: black;
       overflow: hidden;
+      touch-action: none;
     }
     canvas {
       background: black;
       cursor: move;
+      touch-action: none;
     }
   </style>
 </head>
@@ -25,14 +29,14 @@
     const ctx = canvas.getContext('2d');
 
     // Configuration
-    const width = 800;
-    const height = 800;
-    const radius = 300;
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const radius = Math.min(width, height) * 0.35; // Responsive radius
     const points = [];
     const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ,.!? ";
     const numPoints = 500;
     const message = "Hello, World!";
-    const lineGrowDuration = 500; // 2 seconds per line
+    const lineGrowDuration = 500;
 
     // Animation state
     let messagePoints = [];
@@ -41,16 +45,27 @@
     let lineStartTime = 0;
     let currentCharIndex = 0;
     let animationStartTime = 0;
-    const initialDelay = 0; // no seconds delay
+    const initialDelay = 0;
 
-    // Mouse interaction variables
-    let isMouseDown = false;
+    // Interaction variables
+    let isInteracting = false;
     let currentRotationX = 0;
     let currentRotationY = 0;
+    let lastX = 0;
+    let lastY = 0;
 
     // Set canvas size
     canvas.width = width;
     canvas.height = height;
+
+    // Prevent default touch behaviors
+    document.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+    }, { passive: false });
+
+    document.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+    }, { passive: false });
 
     // Generate points on a sphere
     for (let i = 0; i < numPoints; i++) {
@@ -74,7 +89,6 @@
       const usedIndices = new Set();
 
       for (let i = 0; i < message.length; i++) {
-        // Find a random point that isn't used yet
         let pointIndex;
         do {
           pointIndex = Math.floor(Math.random() * points.length);
@@ -91,32 +105,60 @@
       lineStartTime = performance.now();
     }
 
-    // Mouse event listeners
-    canvas.addEventListener('mousedown', () => {
-      isMouseDown = true;
-    });
-
-    canvas.addEventListener('mouseup', () => {
-      isMouseDown = false;
-      currentRotationX = 0;
-      currentRotationY = 0;
-    });
-
-    canvas.addEventListener('mouseleave', () => {
-      isMouseDown = false;
-      currentRotationX = 0;
-      currentRotationY = 0;
-    });
-
-    canvas.addEventListener('mousemove', (e) => {
-      if (isMouseDown) {
-        currentRotationX = -e.movementY * 0.005;
-        currentRotationY = -e.movementX * 0.005;
-      } else {
-        currentRotationX = 0;
-        currentRotationY = 0;
+    // Helper to get position from either mouse or touch event
+    function getEventPosition(e) {
+      if (e.type.startsWith('touch')) {
+        return {
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY
+        };
       }
-    });
+      return {
+        x: e.clientX,
+        y: e.clientY
+      };
+    }
+
+    // Start interaction
+    function handleStart(e) {
+      isInteracting = true;
+      const pos = getEventPosition(e);
+      lastX = pos.x;
+      lastY = pos.y;
+    }
+
+    // End interaction
+    function handleEnd() {
+      isInteracting = false;
+      currentRotationX = 0;
+      currentRotationY = 0;
+    }
+
+    // Handle movement
+    function handleMove(e) {
+      if (!isInteracting) return;
+      
+      const pos = getEventPosition(e);
+      const deltaX = pos.x - lastX;
+      const deltaY = pos.y - lastY;
+
+      currentRotationX = -deltaY * 0.005;
+      currentRotationY = -deltaX * 0.005;
+
+      lastX = pos.x;
+      lastY = pos.y;
+    }
+
+    // Add event listeners for both mouse and touch
+    canvas.addEventListener('mousedown', handleStart);
+    canvas.addEventListener('mouseup', handleEnd);
+    canvas.addEventListener('mousemove', handleMove);
+    canvas.addEventListener('mouseleave', handleEnd);
+
+    canvas.addEventListener('touchstart', handleStart);
+    canvas.addEventListener('touchend', handleEnd);
+    canvas.addEventListener('touchcancel', handleEnd);
+    canvas.addEventListener('touchmove', handleMove);
 
     function rotatePoint(point) {
       if (currentRotationX || currentRotationY) {
@@ -156,13 +198,11 @@
 
     function render() {
       const currentTime = performance.now();
-      // Check if we're still in initial delay
       if (currentTime - animationStartTime < initialDelay) {
         requestAnimationFrame(render);
         return;
       }
  
-      // Adjust timing to account for delay
       const timeSinceStart = currentTime - lineStartTime;
       const progress = Math.min(timeSinceStart / lineGrowDuration, 1);
 
@@ -171,10 +211,8 @@
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
-      // Sort points by z-coordinate for proper depth rendering
       const sortedPoints = [...points].sort((a, b) => b.z - a.z);
 
-      // Draw all points
       sortedPoints.forEach(point => {
         const scale = 800 / (800 - point.z);
         const x = point.x * scale + width / 2;
@@ -185,11 +223,10 @@
         );
         
         if (point.isMessageChar) {
-          // If this is a message character, check if it should be red
           if (point.messageIndex <= currentCharIndex) {
-            ctx.fillStyle = 'rgb(255, 0, 0)'; // Red for active characters
+            ctx.fillStyle = 'rgb(255, 0, 0)';
           } else {
-            ctx.fillStyle = 'rgb(255, 255, 255)'; // White for future characters
+            ctx.fillStyle = 'rgb(255, 255, 255)';
           }
         } else {
           ctx.fillStyle = `rgb(${brightness},${brightness},${brightness})`;
@@ -198,12 +235,10 @@
         ctx.fillText(point.char, x, y);
       });
 
-      // Draw lines between message characters
       for (let i = 0; i < currentCharIndex; i++) {
         drawLine(messagePoints[i], messagePoints[i + 1], 1);
       }
 
-      // Draw current growing line
       if (currentCharIndex < messagePoints.length - 1) {
         drawLine(
           messagePoints[currentCharIndex],
@@ -217,11 +252,16 @@
         }
       }
 
-      // Apply rotation to all points
       points.forEach(rotatePoint);
 
       requestAnimationFrame(render);
     }
+
+    // Handle window resizing
+    window.addEventListener('resize', () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    });
 
     // Start the animation
     initializeMessage();
@@ -231,5 +271,3 @@
   </script>
 </body>
 </html>
-
-
