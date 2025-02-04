@@ -34,9 +34,13 @@
     const radius = Math.min(width, height) * 0.35; // Responsive radius
     const points = [];
     const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ,.!? ";
-    const numPoints = 500;
+    // Adjust number of points based on screen width
+    const numPoints = width < 768 ? 200 : 500;
     const message = "Hello, World!";
     const lineGrowDuration = 500;
+
+    // Get font size based on screen width
+    const getFontSize = () => width < 768 ? '16px' : '24px';
 
     // Animation state
     let messagePoints = [];
@@ -207,7 +211,7 @@
       const progress = Math.min(timeSinceStart / lineGrowDuration, 1);
 
       ctx.clearRect(0, 0, width, height);
-      ctx.font = '24px monospace';
+      ctx.font = `${getFontSize()} monospace`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
