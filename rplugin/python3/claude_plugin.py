@@ -367,15 +367,21 @@ class ClaudePlugin:
             last_response_end = buffer_content.rindex(
                 '</assistant>') + len('</assistant>')
             new_content = buffer_content[last_response_end:].strip()
-            wrapped_content = f"\n\n<user>\n{new_content}\n</user>"
-            # Preserve the content before the new content and append the wrapped content
-            updated_content = buffer_content[:last_response_end] + \
-                wrapped_content
-            self.nvim.current.buffer[:] = updated_content.split('\n')
+            # Only wrap if there is actual content after </assistant>
+            if new_content:
+                wrapped_content = f"\n\n<user>\n{new_content}\n</user>"
+                # Preserve the content before the new content and append the wrapped content
+                updated_content = buffer_content[:last_response_end] + \
+                    wrapped_content
+                self.nvim.current.buffer[:] = updated_content.split('\n')
+            else:
+                # No new content to wrap, keep buffer as-is
+                return
         else:
-            new_content = buffer_content
-            wrapped_content = f"<user>\n{new_content}\n</user>"
-            self.nvim.current.buffer[:] = wrapped_content.split('\n')
+            new_content = buffer_content.strip()
+            if new_content:
+                wrapped_content = f"<user>\n{new_content}\n</user>"
+                self.nvim.current.buffer[:] = wrapped_content.split('\n')
 
     def do_completion(self, completion_method: Callable, args: List[str]) -> None:
         self._wrap_new_content_with_user_tags()
@@ -415,7 +421,6 @@ class ClaudePlugin:
                     f"Truncated conversation from {len(messages)} to "
                     f"{len(truncated_messages)} messages.\n")
                 messages = truncated_messages
-
         try:
             response_stream = completion_method(
                 system=self.system_prompt,
