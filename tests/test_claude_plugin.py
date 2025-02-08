@@ -57,8 +57,8 @@ class TestClaudePlugin(unittest.TestCase):
 
     def test__extract_code_blocks(self):
         text = "Here is some code:\n```python\nprint('Hello, world!')\n```\nAnd some more text."
-        expected = [('python', "print('Hello, world!')\n")]
-        result = self.plugin._extract_code_blocks(text)
+        expected = [('python', "", "print('Hello, world!')\n", 1)]
+        result = self.plugin._extract_code_blocks(text, 0)
         self.assertEqual(result, expected)
 
     def test__format_response(self):
@@ -116,10 +116,10 @@ class TestClaudePlugin(unittest.TestCase):
         ```
         """
         expected = [
-            ('python', "        print('Hello, world!')\n        "),
-            ('javascript', "        console.log('Hello, world!');\n        ")
+            ('python', "", "        print('Hello, world!')\n        ", 2),
+            ('javascript', "", "        console.log('Hello, world!');\n        ", 6)
         ]
-        result = self.plugin._extract_code_blocks(text)
+        result = self.plugin._extract_code_blocks(text, 0)
         self.assertEqual(result, expected)
 
     def test__extract_code_blocks__no_language_specified(self):
@@ -129,14 +129,16 @@ class TestClaudePlugin(unittest.TestCase):
         print('Hello, world!')
         ```
         """
-        expected = [('txt', "        print('Hello, world!')\n        ")]
-        result = self.plugin._extract_code_blocks(text)
+        expected = [
+            ('txt', '', "        print('Hello, world!')\n        ", 2),
+        ]
+        result = self.plugin._extract_code_blocks(text, 0)
         self.assertEqual(result, expected)
 
     def test__extract_code_blocks__no_code_blocks(self):
         text = "Here is some text without any code blocks."
         expected = []
-        result = self.plugin._extract_code_blocks(text)
+        result = self.plugin._extract_code_blocks(text, 0)
         self.assertEqual(result, expected)
 
     def test__extract_code_blocks__empty_code_block(self):
@@ -145,8 +147,8 @@ class TestClaudePlugin(unittest.TestCase):
         ```python
         ```
         """
-        expected = [('python', "        ")]
-        result = self.plugin._extract_code_blocks(text)
+        expected = [('python', "", "        ", 2)]
+        result = self.plugin._extract_code_blocks(text, 0)
         self.assertEqual(result, expected)
 
     def test__format_response__text_blocks(self):
@@ -324,6 +326,52 @@ class TestClaudePlugin(unittest.TestCase):
         self.assertEqual(prompt_tokens, 5)
         self.assertEqual(message_tokens[0].input_tokens, 5)
 
+    def test__find_last_response__normal_case(self):
+        buffer_content = (
+            "<user>\n"
+            "Some text before\n"
+            "</user>\n"
+            "<assistant>\n"
+            "Response 1 line 1\n"
+            "Response 1 line 2\n"
+            "</assistant>\n"
+            "<user>\n"
+            "Some text in between\n"
+            "</user>\n"
+            "<assistant>\n"
+            "Response 2 line 1\n"
+            "Response 2 line 2\n"
+            "</assistant>\n"
+        )
+        self.plugin.nvim.current.window.cursor = [14, 0]
+        last_response, start_line = self.plugin._find_last_response(
+            buffer_content)
+        self.assertEqual(last_response, "Response 2 line 1\nResponse 2 line 2")
+        self.assertEqual(start_line, 10)
+
+    def test__find_last_response__normal_case__cursor_above(self):
+        buffer_content = (
+            "<user>\n"
+            "Some text before\n"
+            "</user>\n"
+            "<assistant>\n"
+            "Response 1 line 1\n"
+            "Response 1 line 2\n"
+            "</assistant>\n"
+            "<user>\n"
+            "Some text in between\n"
+            "</user>\n"
+            "<assistant>\n"
+            "Response 2 line 1\n"
+            "Response 2 line 2\n"
+            "</assistant>\n"
+        )
+        self.plugin.nvim.current.window.cursor = [5, 0]
+        last_response, start_line = self.plugin._find_last_response(
+            buffer_content)
+        self.assertEqual(last_response, "Response 1 line 1\nResponse 1 line 2")
+        self.assertEqual(start_line, 3)
+
     def test__find_last_response__with_assistant_tag(self):
         buffer_content = (
             "Some text before\n"
@@ -334,8 +382,10 @@ class TestClaudePlugin(unittest.TestCase):
         )
         # Cursor on the line with "Some text in between"
         self.plugin.nvim.current.window.cursor = [4, 0]
-        last_response = self.plugin._find_last_response(buffer_content)
+        last_response, start_line = self.plugin._find_last_response(
+            buffer_content)
         self.assertEqual(last_response, "Response 2")
+        self.assertEqual(start_line, 3)
 
     def test__find_last_response__within_assistant_block(self):
         buffer_content = (
@@ -346,8 +396,10 @@ class TestClaudePlugin(unittest.TestCase):
         )
         self.plugin.nvim.current.window.cursor = [
             2, 0]  # Cursor within the assistant block
-        last_response = self.plugin._find_last_response(buffer_content)
+        last_response, start_line = self.plugin._find_last_response(
+            buffer_content)
         self.assertEqual(last_response, "Response 1\nContinued response")
+        self.assertEqual(start_line, 1)
 
     def test__find_last_response__no_assistant_tag(self):
         buffer_content = (
@@ -357,8 +409,10 @@ class TestClaudePlugin(unittest.TestCase):
         )
         # Cursor on the line with "Some text in between"
         self.plugin.nvim.current.window.cursor = [2, 0]
-        last_response = self.plugin._find_last_response(buffer_content)
+        last_response, start_line = self.plugin._find_last_response(
+            buffer_content)
         self.assertIsNone(last_response)
+        self.assertIsNone(start_line)
 
     def test__find_last_response__assistant_tag_on_same_line(self):
         buffer_content = (
@@ -367,8 +421,10 @@ class TestClaudePlugin(unittest.TestCase):
         )
         # Cursor on the line with the assistant tag
         self.plugin.nvim.current.window.cursor = [2, 0]
-        last_response = self.plugin._find_last_response(buffer_content)
+        last_response, start_line = self.plugin._find_last_response(
+            buffer_content)
         self.assertEqual(last_response, "Response 1")
+        self.assertEqual(start_line, 1)
 
     def test__generate_filename__python(self):
         language = "python"
@@ -381,7 +437,7 @@ class TestClaudePlugin(unittest.TestCase):
             ]
         )
 
-        filename = self.plugin._generate_filename(language, code)
+        filename = self.plugin._generate_filename(language, None, code)
         self.assertEqual(filename, expected_filename)
 
     def test__generate_filename__javascript(self):
@@ -395,7 +451,7 @@ class TestClaudePlugin(unittest.TestCase):
             ]
         )
 
-        filename = self.plugin._generate_filename(language, code)
+        filename = self.plugin._generate_filename(language, None, code)
         self.assertEqual(filename, expected_filename)
 
     def test__generate_filename__no_language(self):
@@ -409,7 +465,7 @@ class TestClaudePlugin(unittest.TestCase):
             ]
         )
 
-        filename = self.plugin._generate_filename(language, code)
+        filename = self.plugin._generate_filename(language, None, code)
         self.assertEqual(filename, expected_filename)
 
     def test__generate_filename__special_characters(self):
@@ -423,8 +479,52 @@ class TestClaudePlugin(unittest.TestCase):
             ]
         )
 
-        filename = self.plugin._generate_filename(language, code)
+        filename = self.plugin._generate_filename(language, None, code)
         self.assertEqual(filename, expected_filename)
+
+    def test__generate_filename__with_existing_filename(self):
+        language = "python"
+        filename = "existing_file.py"
+        code = "print('Hello, world!')"
+
+        # Create a mock for the client
+        self.plugin.claude_client = MagicMock()
+        self.plugin.claude_client.messages.create = MagicMock()
+
+        # Should return the existing filename without calling Claude
+        result = self.plugin._generate_filename(language, filename, code)
+        self.assertEqual(result, filename)
+        self.plugin.claude_client.messages.create.assert_not_called()
+
+    def test__generate_filename__with_empty_filename(self):
+        language = "python"
+        filename = ""
+        code = "print('Hello, world!')"
+        expected_filename = "hello.py"
+
+        self.plugin.claude_client.messages.create = lambda *args, **kwargs: MagicMock(
+            content=[
+                anthropic.types.TextBlock(type="text", text=expected_filename)
+            ]
+        )
+
+        result = self.plugin._generate_filename(language, filename, code)
+        self.assertEqual(result, expected_filename)
+
+    def test__generate_filename__with_none_filename(self):
+        language = "python"
+        filename = None
+        code = "print('Hello, world!')"
+        expected_filename = "hello.py"
+
+        self.plugin.claude_client.messages.create = lambda *args, **kwargs: MagicMock(
+            content=[
+                anthropic.types.TextBlock(type="text", text=expected_filename)
+            ]
+        )
+
+        result = self.plugin._generate_filename(language, filename, code)
+        self.assertEqual(result, expected_filename)
 
     def test__process_content___text_only(self):
         input_string = "This is a simple text without any content tags."

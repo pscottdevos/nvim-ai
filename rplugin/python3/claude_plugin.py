@@ -94,6 +94,33 @@ DEFAULT_SYSTEM_PROMPT = """
 
 @pynvim.plugin
 class ClaudePlugin:
+    """A Neovim plugin that provides integration with Anthropic's Claude AI
+    model.
+
+    This plugin enables users to interact with Claude directly from Neovim,
+    offering features like code generation, text completion, and intelligent
+    responses. It supports multiple Claude models, configurable settings, and
+    maintains conversation context within buffers.
+
+    The plugin provides commands for:
+    - Text/code completion
+    - Model selection and management
+    - Code block extraction and file handling
+    - Conversation management with context truncation
+    """
+
+    COMMENT_STYLES = {
+        'python': '#',
+        'javascript': '//',
+        'js': '//',
+        'c': '//',
+        'cpp': '//',
+        'asm': ';',
+        'nasm': ';',
+        'rust': '//',
+        'go': '//',
+    }
+
     def __init__(self, nvim):
         self.nvim = nvim
         self.buffer_filenames = {}
@@ -156,11 +183,60 @@ class ClaudePlugin:
         with open(attributes_path, 'w') as file:
             json.dump(attributes, file, indent=2)
 
-    @staticmethod
-    def _extract_code_blocks(text: str) -> List[Tuple[str, str]]:
-        """Extracts code blocks from the given text."""
-        code_blocks = re.finditer(r'```(\w*)\n([\s\S]*?)```', text)
-        return [(block.group(1) or 'txt', block.group(2)) for block in code_blocks]
+    @classmethod
+    def _extract_code_blocks(cls, text: str, start_line: int) -> List[Tuple[str, str, str, int]]:
+        """Extracts code blocks from the given text, including filenames if present.
+
+        Returns a list of tuples containing:
+        - file_type: The language/type of the code block
+        - filename: Optional filename if specified in a comment
+        - code: The code content
+        - line_number: The line number where the code block starts
+
+        Handles comment styles for:
+        - Python (#)
+        - JavaScript (//)
+        - C (//)
+        - C++ (//)
+        - Assembly (;)
+        - Rust (//)
+        - Go (//)
+        """
+
+        code_blocks = re.finditer(
+            r'```(\w*)\n'  # Language identifier (note: * instead of +)
+            r'(?:#!.*\n)?'  # Optional shebang
+            # Comment with filename (note added \n)
+            r'(?:[^`\n]*?(?:(?://|#|;)\s*([^\n]+)\n))?'
+            r'([\s\S]*?)```',  # Rest of code block
+            text)
+
+        result = []
+        for block in code_blocks:
+            # Calculate the line number by counting newlines before the match
+            line_number = start_line + text[:block.start()].count('\n')
+
+            file_type = block.group(1) or 'txt'
+            filename = block.group(2) or ''  # Filename from comment if present
+            code = block.group(3)  # Preserve all whitespace
+
+            # If no filename was found in the first line comment, look for it in the second line
+            # in case there was a shebang
+            if not filename and code:
+                first_line = code.split('\n', 1)[0]
+                comment_style = cls.COMMENT_STYLES.get(file_type.lower())
+                if comment_style:
+                    filename_match = re.match(
+                        rf'^[^`\n]*?{comment_style}\s*([^\n]+)',
+                        first_line
+                    )
+                    if filename_match:
+                        filename = filename_match.group(1)
+                        # Remove the filename line from the code if it was found
+                        # code = code.split('\n', 1)[1] if '\n' in code else ''
+
+            result.append((file_type, filename, code, line_number))
+        return result
 
     @staticmethod
     def _format_response(response: list[
@@ -215,7 +291,7 @@ class ClaudePlugin:
 
         return prompt_tokens, message_tokens
 
-    def _find_last_response(self, buffer_content: str) -> Optional[str]:
+    def _find_last_response(self, buffer_content: str) -> Tuple[Optional[str], Optional[int]]:
         cursor_pos = self.nvim.current.window.cursor[0] - 1
         buffer_lines = buffer_content.split('\n')
 
@@ -225,7 +301,7 @@ class ClaudePlugin:
             if '<assistant>' in line and '</assistant>' in line:
                 start = line.find('<assistant>') + len('<assistant>')
                 end = line.find('</assistant>')
-                return line[start:end].strip()
+                return line[start:end].strip(), i
             elif '<assistant>' in line:
                 # Cursor is on the opening tag or within the block
                 start = i
@@ -236,26 +312,48 @@ class ClaudePlugin:
                             '\n'.join(buffer_lines[start:end + 1])
                             .replace('<assistant>', '')
                             .replace('</assistant>', '')
-                            .strip()
+                            .strip(),
+                            start
                         )
 
         # If no match is found, write an error
         self.nvim.err_write(
             "No <assistant> tag found around or above the cursor\n")
-        return None
+        return None, None
 
-    def _generate_filename(self, language: str, code: str) -> str:
-        filename_prompt = (
-            f"Suggest an appropriate filename for this code block.\n"
-            f"{language}:\n{code}\n\n"
-            "Respond with only the filename, no explanation."
-        )
-        filename_response = self.claude_client.messages.create(
-            model=self.filename_model,
-            messages=[{"role": "user", "content": filename_prompt}],
-            max_tokens=100
-        )
-        return self._get_filename_from_response(filename_response)
+    def _generate_filename(self, language: str, filename: str, code: str) -> str:
+        """Generate a filename for a code block."""
+        # If filename is provided and not empty, use it
+        if filename:
+            return filename
+
+        # Ask Claude to generate a filename
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    f"Given this {language} code:\n\n{code}\n\n"
+                    "Respond with only a filename that would be appropriate for this code. "
+                    "The filename should be descriptive and follow standard conventions "
+                    f"for {language} files. Do not include any explanation, just the filename."
+                )
+            }
+        ]
+
+        try:
+            response = self.claude_client.messages.create(
+                model=self.filename_model,
+                max_tokens=128,
+                temperature=0.0,
+                system=self.system_prompt,
+                messages=messages
+            )
+            return self._get_filename_from_response(response)
+        except Exception as e:
+            self.nvim.err_write(
+                f"Error generating filename:\n{format_exc()}\n"
+            )
+            return f"untitled.{language}"
 
     def _process_content(self, input_string: str) -> List[dict]:
         """                                                                                                         
@@ -544,16 +642,16 @@ class ClaudePlugin:
     def buffer_code_command(self, args: List[str]) -> None:
         buffer_content = '\n'.join(self.nvim.current.buffer[:])
 
-        last_response = self._find_last_response(buffer_content)
+        last_response, start_line = self._find_last_response(buffer_content)
         if last_response is None:
             self.nvim.err_write("No response found in buffer\n")
             return
 
-        code_blocks = self._extract_code_blocks(last_response)
+        code_blocks = self._extract_code_blocks(last_response, start_line)
 
         original_buffer_number = self.nvim.current.buffer.number
 
-        for i, (language, code) in enumerate(code_blocks):
+        for _, _, code, _ in code_blocks:
             try:
                 # Create a new buffer and set its content to the code block
                 self.nvim.command('enew')
@@ -575,19 +673,49 @@ class ClaudePlugin:
 
     @pynvim.command('WC', nargs='0', sync=True)
     def write_code_command(self, args: List[str]) -> None:
+        """Write code blocks to files and update the buffer with filenames."""
         buffer_content = '\n'.join(self.nvim.current.buffer[:])
 
-        last_response = self._find_last_response(buffer_content)
+        last_response, start_line = self._find_last_response(buffer_content)
         if last_response is None:
             self.nvim.err_write("No response found in buffer\n")
             return
 
-        code_blocks = self._extract_code_blocks(last_response)
+        code_blocks = self._extract_code_blocks(last_response, start_line)
+        buffer = self.nvim.current.buffer
 
-        for language, code in code_blocks:
-            filename = self._generate_filename(language, code)
+        for language, filename, code, line_number in code_blocks:
+            # Generate filename if none exists
+            if not filename:
+                filename = self._generate_filename(language, filename, code)
 
             try:
+                # Find the code block in the buffer
+                for i in range(line_number, len(buffer)):
+                    # Match either ```language or just ``` for no language
+                    if buffer[i] == '```' or buffer[i] == f'```{language}':
+                        # Get the comment style for this language
+                        comment_style = self.COMMENT_STYLES.get(
+                            language.lower(), '#')
+
+                        # Check if next line is a shebang
+                        next_line = buffer[i + 1] if i + \
+                            1 < len(buffer) else ''
+                        filename_line = f'{comment_style} {filename}'
+
+                        if next_line.startswith('#!'):
+                            # Check the line after shebang
+                            if i + 2 >= len(buffer) or buffer[i + 2] != filename_line:
+                                buffer[i + 2:i + 2] = [filename_line]
+                            # Include shebang in the saved file
+                            code = next_line + '\n' + code
+                        else:
+                            # Check if filename is already in the next line
+                            if i + 1 >= len(buffer) or buffer[i + 1] != filename_line:
+                                buffer[i + 1:i + 1] = [filename_line]
+                        break
+
+                # Write the code to the file
                 with open(filename, 'w') as f:
                     f.write(code)
                 self.nvim.out_write(f"Saved code block to {filename}\n")
