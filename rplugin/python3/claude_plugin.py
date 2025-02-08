@@ -671,6 +671,37 @@ class ClaudePlugin:
     def buffer_code_full_command(self, args: List[str]) -> None:
         return self.buffer_code_command(args)
 
+    def _is_valid_filename_comment(self, language: str, line: str) -> bool:
+        """Use Claude to validate if a line looks like a proper filename comment."""
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    f"Does this line look like a proper filename comment for a {language} file?\n"
+                    f"\n{line}\n\n"
+                    "Respond with only 'yes' or 'no'. A proper filename comment should:\n"
+                    "1. Start with the correct comment character for the language\n"
+                    "2. Have a reasonable filename that matches the language\n"
+                    "3. Not contain code or other content\n"
+                )
+            }
+        ]
+
+        try:
+            response = self.claude_client.messages.create(
+                model=self.filename_model,
+                max_tokens=128,
+                temperature=0.0,
+                system=self.system_prompt,
+                messages=messages
+            )
+            return self._get_filename_from_response(response).lower().strip() == 'yes'
+        except Exception as e:
+            self.nvim.err_write(
+                f"Error validating filename comment:\n{format_exc()}\n"
+            )
+            return False
+
     @pynvim.command('WC', nargs='0', sync=True)
     def write_code_command(self, args: List[str]) -> None:
         """Write code blocks to files and update the buffer with filenames."""
@@ -685,10 +716,6 @@ class ClaudePlugin:
         buffer = self.nvim.current.buffer
 
         for language, filename, code, line_number in code_blocks:
-            # Generate filename if none exists
-            if not filename:
-                filename = self._generate_filename(language, filename, code)
-
             try:
                 # Find the code block in the buffer
                 for i in range(line_number, len(buffer)):
@@ -701,18 +728,36 @@ class ClaudePlugin:
                         # Check if next line is a shebang
                         next_line = buffer[i + 1] if i + \
                             1 < len(buffer) else ''
-                        filename_line = f'{comment_style} {filename}'
+                        check_line = buffer[i +
+                                            2] if next_line.startswith('#!') else next_line
 
-                        if next_line.startswith('#!'):
-                            # Check the line after shebang
-                            if i + 2 >= len(buffer) or buffer[i + 2] != filename_line:
-                                buffer[i + 2:i + 2] = [filename_line]
-                            # Include shebang in the saved file
-                            code = next_line + '\n' + code
+                        # Use Claude to validate if the line is a proper filename comment
+                        is_valid_filename = self._is_valid_filename_comment(
+                            language, check_line)
+
+                        if is_valid_filename:
+                            # Extract filename from the valid comment line
+                            for style in self.COMMENT_STYLES.values():
+                                if check_line.startswith(f"{style} "):
+                                    filename = check_line[len(
+                                        style) + 1:].strip()
+                                    break
                         else:
-                            # Check if filename is already in the next line
-                            if i + 1 >= len(buffer) or buffer[i + 1] != filename_line:
-                                buffer[i + 1:i + 1] = [filename_line]
+                            # Generate new filename if validation failed
+                            filename = self._generate_filename(
+                                language, '', code)
+                            filename_line = f'{comment_style} {filename}'
+
+                            if next_line.startswith('#!'):
+                                # Insert filename after shebang line
+                                if i + 2 >= len(buffer) or buffer[i + 2] != filename_line:
+                                    buffer[i + 2:i + 2] = [filename_line]
+                                # Include shebang in the saved file
+                                code = next_line + '\n' + code
+                            else:
+                                # Insert filename as first line
+                                if i + 1 >= len(buffer) or buffer[i + 1] != filename_line:
+                                    buffer[i + 1:i + 1] = [filename_line]
                         break
 
                 # Write the code to the file
