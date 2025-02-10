@@ -50,6 +50,8 @@ ABSOLUTE_MIN_CONTEXT_TOKENS = 1024
 ABSOLUTE_MAX_CONTEXT_TOKENS = 1024 * 200
 DEFAULT_MAX_CONTEXT_TOKENS = ABSOLUTE_MAX_CONTEXT_TOKENS
 
+LIMIT_WINDOW = 60.0
+
 SETTINGS_FILE = 'nvim_claude.json'
 
 DEFAULT_SYSTEM_PROMPT = """
@@ -135,6 +137,7 @@ class ClaudePlugin:
             "system_prompt": DEFAULT_SYSTEM_PROMPT,
             "temperature": DEFAULT_TEMPERATURE,
             "timeout": DEFAULT_TIMEOUT,
+            "limit_window": LIMIT_WINDOW,
         }
 
         # Load configuration from file
@@ -163,6 +166,7 @@ class ClaudePlugin:
         self.system_prompt = config["system_prompt"]
         self.temperature = config["temperature"]
         self.timeout = config["timeout"]
+        self.limit_window = config["limit_window"]
         self.claude_client = anthropic.Client(
             timeout=Timeout(10.0, read=self.timeout, write=self.timeout))
 
@@ -176,6 +180,7 @@ class ClaudePlugin:
             "system_prompt": self.system_prompt,
             "temperature": self.temperature,
             "timeout": self.timeout,
+            "limit_window": self.limit_window,
         }
         config_dir = os.path.join(os.path.expanduser('~'), '.config', 'nvim')
         os.makedirs(config_dir, exist_ok=True)
@@ -529,9 +534,16 @@ class ClaudePlugin:
                 timeout=Timeout(10.0, read=self.timeout, write=self.timeout),
                 stream=True
             )
+        except anthropic.RateLimitError:
+            self.nvim.out_write(f"Rate limit reached.")
+        except Exception as e:
+            self.nvim.err_write(
+                f"Error generating response:\n{format_exc()}\n")
+            return
 
-            self.nvim.current.buffer.append(["", "<assistant>", ""])
-            response_text = ""
+        self.nvim.current.buffer.append(["", "<assistant>", ""])
+        response_text = ""
+        try:
             for chunk in response_stream:
                 if chunk.type == "content_block_delta":
                     response_text += chunk.delta.text
@@ -542,21 +554,29 @@ class ClaudePlugin:
                     # Move cursor to the last line of the buffer after appending each chunk
                     self.nvim.current.window.cursor = (
                         len(self.nvim.current.buffer), 0)
-            self.nvim.current.buffer.append(["", "</assistant>", "", ""])
+        except anthropic.RateLimitError:
+            self.nvim.err_write("Rate limit reached.")
+        except Exception as e:
+            self.nvim.err_write(
+                f"Error generating response:\n{format_exc()}\n")
+            return
 
-            buffer_number = self.nvim.current.buffer.number
-            if self.buffer_filenames.get(buffer_number):
-                # Make sure filename is sanitized
-                sanitized_filename = shlex.quote(
-                    self.buffer_filenames[buffer_number])
-            else:
-                # Get a filename if we don't already have one by asking Claude
-                filename_prompt = """
-                    Based on our conversation, suggest a descriptive filename
-                    for saving this chat. Respond with only the filename,
-                    no explanation. Keep the filename pithy and descriptive.
-                    Extention should be .txt.
-                """
+        self.nvim.current.buffer.append(["", "</assistant>", "", ""])
+
+        buffer_number = self.nvim.current.buffer.number
+        if self.buffer_filenames.get(buffer_number):
+            # Make sure filename is sanitized
+            sanitized_filename = shlex.quote(
+                self.buffer_filenames[buffer_number])
+        else:
+            # Get a filename if we don't already have one by asking Claude
+            filename_prompt = """
+                Based on our conversation, suggest a descriptive filename
+                for saving this chat. Respond with only the filename,
+                no explanation. Keep the filename pithy and descriptive.
+                Extention should be .txt.
+            """
+            try:
                 filename_response = completion_method(
                     model=self.filename_model,
                     messages=messages + [
@@ -565,24 +585,33 @@ class ClaudePlugin:
                     ],
                     max_tokens=100
                 )
+            except anthropic.RateLimitError:
+                self.nvim.err_write(
+                    f"Rate limit reached. Sleeping for {self.limit_window} seconds."
+                )
+                self.nvim.err_write(
+                    "You can change the limit window with :ClaudeSettings "
+                    "limit_window=<seconds>")
+                filename_response = "rate_limit_error_on_filename_response.txt"
+            except Exception as e:
+                self.nvim.err_write(
+                    f"Error generating filename:\n{format_exc()}\n"
+                )
+                return
 
-                filename = self._get_filename_from_response(filename_response)
-                # Escape spaces and special characters in filename
-                sanitized_filename = shlex.quote(filename)
-                sanitized_filename = datetime.now().strftime(
-                    "%Y-%m-%d_%H-%M-%S_") + sanitized_filename
-            self.buffer_filenames[buffer_number] = sanitized_filename
-            self.nvim.out_write(f"Saving to {sanitized_filename}\n")
-            cmd = f'write! {sanitized_filename}'
-            self.nvim.command(cmd)
+            filename = self._get_filename_from_response(filename_response)
+            # Escape spaces and special characters in filename
+            sanitized_filename = shlex.quote(filename)
+            sanitized_filename = datetime.now().strftime(
+                "%Y-%m-%d_%H-%M-%S_") + sanitized_filename
+        self.buffer_filenames[buffer_number] = sanitized_filename
+        self.nvim.out_write(f"Saving to {sanitized_filename}\n")
+        cmd = f'write! {sanitized_filename}'
+        self.nvim.command(cmd)
 
-            # Move cursor to the last line of the buffer after appending response
-            self.nvim.current.window.cursor = (
-                len(self.nvim.current.buffer), 0)
-
-        except Exception as e:
-            self.nvim.err_write(
-                f"Error generating response:\n{format_exc()}\n")
+        # Move cursor to the last line of the buffer after appending response
+        self.nvim.current.window.cursor = (
+            len(self.nvim.current.buffer), 0)
 
     def get_claude_models(self) -> List[str]:
         """Get a list of available Anthropic models."""
@@ -916,6 +945,7 @@ class ClaudePlugin:
             self.max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
             self.temperature = DEFAULT_TEMPERATURE
             self.timeout = DEFAULT_TIMEOUT
+            self.limit_window = LIMIT_WINDOW
             self._save_attributes_to_file()
             self.nvim.out_write("Settings restored to defaults.\n")
         elif args[0].lower() == 'save':
@@ -925,7 +955,7 @@ class ClaudePlugin:
             setting, value = [s.strip() for s in args[0].split('=')]
             if setting not in [
                 'model', 'filename_model', 'max_tokens', 'max_context_tokens',
-                'truncate', 'temperature', 'timeout'
+                'truncate', 'temperature', 'timeout', 'limit_window'
             ]:
                 self.nvim.err_write(
                     f"Error: {setting} is not a valid setting.\n")
@@ -983,12 +1013,19 @@ class ClaudePlugin:
                         "Error: timeout must be between 0.0 and 600.0.\n")
                     return
                 self.timeout = value
+            elif setting == 'limit_window':
+                value = float(value)
+                if value < 0.0 or value > 600.0:  # 0 to 10 minutes
+                    self.nvim.err_write(
+                        "Error: limit window must be between 0.0 and 600.0.\n")
+                    return
+                self.limit_window = value
         else:
             self.nvim.err_write(
                 "Invalid argument. Use 'defaults' or 'save' or "
                 "'model=...', 'filename_model=...', 'max_tokens=...', "
                 "'max_context_tokens=...', 'truncate=...', 'temperature=...', "
-                "'timeout=...'\n")
+                "'timeout=...', 'limit_window=...'\n")
             return
         self.nvim.out_write(
             f"Current settings:\n"
@@ -999,6 +1036,7 @@ class ClaudePlugin:
             f"truncate_conversation: {self.truncate_conversation}\n"
             f"temperature: {self.temperature}\n"
             f"timeout: {self.timeout}\n"
+            f"limit_window: {self.limit_window}\n"
         )
 
     @pynvim.command('ClaudeSettings', nargs='?', sync=True)

@@ -102,6 +102,7 @@ class TestClaudePlugin(unittest.TestCase):
             "system_prompt": "Test prompt",
             "temperature": 0.5,
             "timeout": 300.0,
+            "limit_window": 60.0
         }, mock_file, indent=2)
 
     def test__extract_code_blocks__multiple_blocks(self):
