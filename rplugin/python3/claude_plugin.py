@@ -859,15 +859,28 @@ class ClaudePlugin:
 
     @pynvim.command('TC', nargs='0', sync=True)
     def token_count_command(self, args: List[str]) -> None:
-        """Respond with the number of tokens in the current buffer."""
+        """Respond with the number of tokens in the current buffer, including <content> tags."""
         try:
             buffer_content = '\n'.join(self.nvim.current.buffer[:])
-            messages = [{"role": "user", "content": buffer_content}]
+            # Process the buffer content to handle <content> tags
+            processed_content = self._process_content(buffer_content)
+
+            # Convert processed content back to a single string for token counting
+            full_content = ""
+            for item in processed_content:
+                if item["type"] == "text":
+                    full_content += item["text"]
+                elif item["type"] in ["image", "video"]:
+                    # For media types, you might want to add a placeholder or description
+                    full_content += f"<{item['type']}: {item['source']['media_type']}>\n"
+
+            messages = [{"role": "user", "content": full_content}]
             prompt_tokens, message_tokens = self._count_tokens(messages)
             total_tokens = prompt_tokens + \
                 sum([m.input_tokens for m in message_tokens])
             self.nvim.out_write(
-                f"Current buffer token count: {total_tokens}\n")
+                f"Current buffer token count (including <content>): {total_tokens}\n"
+            )
         except Exception as e:
             self.nvim.err_write(
                 f"Error counting tokens in current buffer:\n{format_exc()}\n"
