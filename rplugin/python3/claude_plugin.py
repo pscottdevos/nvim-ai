@@ -121,6 +121,7 @@ class ClaudePlugin:
         'nasm': ';',
         'rust': '//',
         'go': '//',
+        'openscad': '//',
     }
 
     def __init__(self, nvim):
@@ -711,6 +712,7 @@ class ClaudePlugin:
                     "Respond with only 'yes' or 'no'. A proper filename comment should:\n"
                     "1. Start with the correct comment character for the language\n"
                     "2. Have a reasonable filename that matches the language\n"
+                    "   or be a valid full path to a file that matches the language\n"
                     "3. Not contain code or other content\n"
                 )
             }
@@ -731,7 +733,7 @@ class ClaudePlugin:
             )
             return False
 
-    @pynvim.command('WC', nargs='0', sync=True)
+    @pynvim.command('WC', nargs='?', sync=True)
     def write_code_command(self, args: List[str]) -> None:
         """Write code blocks to files and update the buffer with filenames."""
         buffer_content = '\n'.join(self.nvim.current.buffer[:])
@@ -744,61 +746,71 @@ class ClaudePlugin:
         code_blocks = self._extract_code_blocks(last_response, start_line)
         buffer = self.nvim.current.buffer
 
+        # Determine the base directory or filename from args
+        base_path = args[0] if args else ''
+
+        # Resolve '~' to the user's home directory
+        if base_path.startswith('~'):
+            base_path = os.path.expanduser(base_path)
+
+        # Check if the argument ends with '!' and create the directory if needed
+        create_dir = base_path.endswith('!')
+        if create_dir:
+            base_path = base_path[:-1]  # Remove the '!' character
+            if not os.path.exists(base_path):
+                os.makedirs(base_path, exist_ok=True)
+
         for language, filename, code, line_number in code_blocks:
             try:
                 # Find the code block in the buffer
                 for i in range(line_number, len(buffer)):
-                    # Match either ```language or just ``` for no language
                     if buffer[i] == '```' or buffer[i] == f'```{language}':
-                        # Get the comment style for this language
                         comment_style = self.COMMENT_STYLES.get(
                             language.lower(), '#')
 
-                        # Check if next line is a shebang
                         next_line = buffer[i + 1] if i + \
                             1 < len(buffer) else ''
                         check_line = buffer[i +
                                             2] if next_line.startswith('#!') else next_line
 
-                        # Use Claude to validate if the line is a proper filename comment
                         is_valid_filename = self._is_valid_filename_comment(
                             language, check_line)
 
                         if is_valid_filename:
-                            # Extract filename from the valid comment line
                             for style in self.COMMENT_STYLES.values():
                                 if check_line.startswith(f"{style} "):
                                     filename = check_line[len(
                                         style) + 1:].strip()
                                     break
                         else:
-                            # Generate new filename if validation failed
                             filename = self._generate_filename(
                                 language, '', code)
-                            filename_line = f'{comment_style} {filename}'
 
-                            if next_line.startswith('#!'):
-                                # Insert filename after shebang line
-                                if i + 2 >= len(buffer) or buffer[i + 2] != filename_line:
-                                    buffer[i + 2:i + 2] = [filename_line]
-                                # Include shebang in the saved file
-                                code = next_line + '\n' + code
-                            else:
-                                # Insert filename as first line
-                                if i + 1 >= len(buffer) or buffer[i + 1] != filename_line:
-                                    buffer[i + 1:i + 1] = [filename_line]
+                        # Determine full path
+                        if os.path.isdir(base_path):
+                            full_path = os.path.join(base_path, filename)
+                        else:
+                            full_path = base_path or filename
+
+                        filename_line = f'{comment_style} {full_path}'
+
+                        if next_line.startswith('#!'):
+                            if i + 2 >= len(buffer) or buffer[i + 2] != filename_line:
+                                buffer[i + 2:i + 2] = [filename_line]
+                            code = next_line + '\n' + code
+                        else:
+                            if i + 1 >= len(buffer) or buffer[i + 1] != filename_line:
+                                buffer[i + 1:i + 1] = [filename_line]
                         break
 
-                # Write the code to the file
-                with open(filename, 'w') as f:
+                with open(full_path, 'w') as f:
                     f.write(code)
-                self.nvim.out_write(f"Saved code block to {filename}\n")
+                self.nvim.out_write(f"Saved code block to {full_path}\n")
             except Exception as e:
                 self.nvim.err_write(
-                    f"Error saving code block:\n{format_exc()}\n"
-                )
+                    f"Error saving code block:\n{format_exc()}\n")
 
-    @pynvim.command('WriteCode', nargs='0', sync=True)
+    @pynvim.command('WriteCode', nargs='?', sync=True)
     def write_code_full_command(self, args: List[str]) -> None:
         return self.write_code_command(args)
 
