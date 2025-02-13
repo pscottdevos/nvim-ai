@@ -537,6 +537,7 @@ class ClaudePlugin:
             )
         except anthropic.RateLimitError:
             self.nvim.out_write(f"Rate limit reached.")
+            return
         except Exception as e:
             self.nvim.err_write(
                 f"Error generating response:\n{format_exc()}\n")
