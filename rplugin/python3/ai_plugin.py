@@ -1,5 +1,5 @@
 """
-Claude Neovim Plugin - AI integration for Neovim
+AI Neovim Plugin - AI integration for Neovim
 Copyright (C) [2024] [P. Scott DeVos]
 
 This program is free software: you can redistribute it and/or modify
@@ -26,18 +26,21 @@ from traceback import format_exc
 from typing import Callable, Optional, List, Tuple
 
 import anthropic
+import httpx
 import pynvim
-from httpx import Timeout
+
+
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
-
 
 # Pattern to match :b<buffer_number> with at least one surrounding whitespace
 BUFFER_PATTERN = re.compile(r'\s+:b(\d+)\s+')
 # Pattern to match material between <content> tags
 CONTENT_PATTERN = re.compile(r'<content>(.*?)</content>', re.DOTALL)
 
-# Maximum number of tokens Claude will return
+# Maximum number of tokens to return
 DEFAULT_MAX_TOKENS = 4096
 ABSOLUTE_MAX_TOKENS = 8192
 ABSOLUTE_MIN_TOKENS = 128
@@ -45,14 +48,14 @@ ABSOLUTE_MIN_TOKENS = 128
 DEFAULT_TEMPERATURE = 0.25
 DEFAULT_TIMEOUT = 60.0
 
-# Maximum number of tokens to send to Claude
+# Maximum number of tokens for context
 ABSOLUTE_MIN_CONTEXT_TOKENS = 1024
 ABSOLUTE_MAX_CONTEXT_TOKENS = 1024 * 200
 DEFAULT_MAX_CONTEXT_TOKENS = ABSOLUTE_MAX_CONTEXT_TOKENS
 
 LIMIT_WINDOW = 60.0
 
-SETTINGS_FILE = 'nvim_claude.json'
+SETTINGS_FILE = 'nvim_ai.json'
 
 DEFAULT_SYSTEM_PROMPT = """
     You are a highly skilled software engineer. Your task when asked to generate
@@ -95,13 +98,12 @@ DEFAULT_SYSTEM_PROMPT = """
 
 
 @pynvim.plugin
-class ClaudePlugin:
-    """A Neovim plugin that provides integration with Anthropic's Claude AI
-    model.
+class AIPlugin:
+    """A Neovim plugin that provides integration with AI models through OpenRouter.
 
-    This plugin enables users to interact with Claude directly from Neovim,
+    This plugin enables users to interact with various AI models directly from Neovim,
     offering features like code generation, text completion, and intelligent
-    responses. It supports multiple Claude models, configurable settings, and
+    responses. It supports multiple models, configurable settings, and
     maintains conversation context within buffers.
 
     The plugin provides commands for:
@@ -127,11 +129,12 @@ class ClaudePlugin:
     def __init__(self, nvim):
         self.nvim = nvim
         self.buffer_filenames = {}
-
+        self.http_client = httpx.Client()
+        self.claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         # Default settings
         default_config = {
-            "current_model": "claude-3-5-haiku-20241022",
-            "filename_model": "claude-3-5-haiku-20241022",
+            "current_model": "anthropic/claude-3.5-haiku-20241022",
+            "filename_model": "anthropic/claude-3.5-haiku-20241022",
             "max_tokens": DEFAULT_MAX_TOKENS,
             "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
             "truncate_conversation": True,
@@ -152,7 +155,6 @@ class ClaudePlugin:
             try:
                 with open(attributes_path, 'r') as file:
                     file_config = json.load(file)
-                    # Update default configuration with file configuration
                     config.update(file_config)
             except Exception as e:
                 self.nvim.err_write(
@@ -168,8 +170,6 @@ class ClaudePlugin:
         self.temperature = config["temperature"]
         self.timeout = config["timeout"]
         self.limit_window = config["limit_window"]
-        self.claude_client = anthropic.Client(
-            timeout=Timeout(10.0, read=self.timeout, write=self.timeout))
 
     def _save_attributes_to_file(self):
         attributes = {
@@ -245,30 +245,37 @@ class ClaudePlugin:
         return result
 
     @staticmethod
-    def _format_response(response: list[
-            anthropic.types.TextBlock | anthropic.types.ToolUseBlock
-    ]) -> str:
-        """Format the response with proper wrapping and tags."""
-        # Extract text from response blocks
-        text = ""
-        for block in response:
-            if isinstance(block, anthropic.types.TextBlock):
-                text += block.text
-            # Skip other block types for now
-        return text
+    def _format_response(response_chunk: str) -> str:
+        """Format the response chunk from streaming response"""
+        try:
+            if response_chunk.startswith("data: "):
+                chunk_data = response_chunk[6:]
+                if chunk_data == "[DONE]":
+                    return ""
+
+                data = json.loads(chunk_data)
+                if content := data["choices"][0]["delta"].get("content"):
+                    return content
+        except Exception:
+            pass
+        return ""
 
     @staticmethod
-    def _get_filename_from_response(response: anthropic.types.Message) -> str:
+    def _get_filename_from_response(response: dict) -> str:
         """Get a filename from the response."""
-        filename = (
-            ClaudePlugin._format_response(response.content)
-            .replace('\n', '')
-            .strip()
-        )
-        # Escape spaces and special characters in filename
-        return shlex.quote(filename)
+        try:
+            return (
+                response["choices"][0]["message"]["content"]
+                .replace('\n', '')
+                .strip()
+            )
+        except (KeyError, IndexError):
+            return "untitled.txt"
 
     def _count_tokens(self, messages: List[dict]) -> Tuple[int, int]:
+        # Uses Claude's token counting API because openrouter doesn't have a
+        # token counting API. This will not be 100% accurate for models that
+        # do not use the same tokenization as Claude.
         if not messages:
             return 0, []
         # Tokenize the system prompt and first message because we have to
@@ -276,7 +283,7 @@ class ClaudePlugin:
         system_prompt_tokens_and_first_message = \
             self.claude_client.beta.messages.count_tokens(
                 betas=["token-counting-2024-11-01"],
-                model=self.current_model,
+                model='claude-3-5-haiku-20241022',
                 system=self.system_prompt,
                 messages=[messages[0]],
             )
@@ -284,7 +291,7 @@ class ClaudePlugin:
         message_tokens = [
             self.claude_client.beta.messages.count_tokens(
                 betas=["token-counting-2024-11-01"],
-                model=self.current_model,
+                model='claude-3-5-haiku-20241022',
                 system="",
                 messages=[msg],
             )
@@ -333,7 +340,7 @@ class ClaudePlugin:
         if filename:
             return filename
 
-        # Ask Claude to generate a filename
+        # Ask filename model to generate a filename
         messages = [
             {
                 "role": "user",
@@ -347,14 +354,14 @@ class ClaudePlugin:
         ]
 
         try:
-            response = self.claude_client.messages.create(
+            response = self._make_completion_request(
+                messages=messages,
                 model=self.filename_model,
                 max_tokens=128,
                 temperature=0.0,
-                system=self.system_prompt,
-                messages=messages
+                system="",
             )
-            return self._get_filename_from_response(response)
+            return self._get_filename_from_response(response.json())
         except Exception as e:
             self.nvim.err_write(
                 f"Error generating filename:\n{format_exc()}\n"
@@ -487,7 +494,61 @@ class ClaudePlugin:
                 wrapped_content = f"<user>\n{new_content}\n</user>"
                 self.nvim.current.buffer[:] = wrapped_content.split('\n')
 
-    def do_completion(self, completion_method: Callable, args: List[str]) -> None:
+    def _make_completion_request(
+        self,
+        messages: List[dict],
+        stream: bool = False,
+        model: str = None,
+        temperature: float = None,
+        max_tokens: int = None,
+        system: str = None,
+    ):
+        """Make a completion request to OpenRouter API"""
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        data = {
+            "model": model or self.current_model,
+            "messages": messages,
+            "stream": stream,
+            "max_tokens": max_tokens or self.max_tokens,
+            "temperature": temperature or self.temperature,
+            "system": system or self.system_prompt,
+        }
+        if system == "":
+            data.pop("system")
+
+        if stream:
+            method = self.http_client.stream
+        else:
+            method = self.http_client.request
+
+        response = method(
+            "POST",
+            f"{OPENROUTER_API_BASE}/chat/completions",
+            headers=headers,
+            json=data,
+            timeout=self.timeout,
+        )
+        return response
+
+    def get_available_models(self) -> List[str]:
+        """Get a list of available models from OpenRouter"""
+        try:
+            response = self.http_client.get(
+                f"{OPENROUTER_API_BASE}/models",
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"}
+            )
+            response.raise_for_status()
+            models = response.json()
+            return sorted([model["id"] for model in models["data"]])
+        except Exception as e:
+            self.nvim.err_write(f"Error fetching models:\n{format_exc()}\n")
+            return []
+
+    def do_completion(self) -> None:
         self._wrap_new_content_with_user_tags()
         buffer_content = '\n'.join(self.nvim.current.buffer[:])
         buffer_number = self.nvim.current.buffer.number
@@ -526,44 +587,43 @@ class ClaudePlugin:
                     f"{len(truncated_messages)} messages.\n")
                 messages = truncated_messages
         try:
-            response_stream = completion_method(
-                system=self.system_prompt,
-                model=self.current_model,
-                messages=messages,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                timeout=Timeout(10.0, read=self.timeout, write=self.timeout),
-                stream=True
-            )
-        except anthropic.RateLimitError:
-            self.nvim.out_write(f"Rate limit reached.")
-            return
+            response = self._make_completion_request(messages, stream=True)
+            if not response:
+                return
+
+            self.nvim.current.buffer.append(["", "<assistant>", ""])
+            response_text = ""
+            current_lines = []
+
+            # Find the index where we added the <assistant> tag
+            buffer_lines = self.nvim.current.buffer[:]
+            # -3 because we added ["", "<assistant>", ""]
+            assistant_start_idx = len(buffer_lines) - 3
+
+            with response as chunk_stream:
+                chunk_stream.raise_for_status()
+                for chunk in chunk_stream.iter_lines():
+                    if not chunk:
+                        continue
+
+                    chunk = self._format_response(chunk)
+                    if chunk:
+                        response_text += chunk
+                        # Split response into lines and update the buffer
+                        current_lines = response_text.split('\n')
+                        # Preserve everything up to the <assistant> tag
+                        self.nvim.current.buffer[:] = \
+                            buffer_lines[:assistant_start_idx +
+                                         2] + current_lines
+                        # Force redraw
+                        self.nvim.command('redraw')
+
         except Exception as e:
             self.nvim.err_write(
                 f"Error generating response:\n{format_exc()}\n")
             return
-
-        self.nvim.current.buffer.append(["", "<assistant>", ""])
-        response_text = ""
-        try:
-            for chunk in response_stream:
-                if chunk.type == "content_block_delta":
-                    response_text += chunk.delta.text
-                    lines = chunk.delta.text.split('\n')
-                    self.nvim.current.buffer[-1] += lines[0]
-                    if len(lines) > 1:
-                        self.nvim.current.buffer.append(lines[1:])
-                    # Move cursor to the last line of the buffer after appending each chunk
-                    self.nvim.current.window.cursor = (
-                        len(self.nvim.current.buffer), 0)
-        except anthropic.RateLimitError:
-            self.nvim.err_write("Rate limit reached.")
-        except Exception as e:
-            self.nvim.err_write(
-                f"Error generating response:\n{format_exc()}\n")
-            return
-
-        self.nvim.current.buffer.append(["", "</assistant>", "", ""])
+        # Append closing assistant tag
+        self.nvim.current.buffer.append(["", "</assistant>", "",])
 
         buffer_number = self.nvim.current.buffer.number
         if self.buffer_filenames.get(buffer_number):
@@ -571,7 +631,7 @@ class ClaudePlugin:
             sanitized_filename = shlex.quote(
                 self.buffer_filenames[buffer_number])
         else:
-            # Get a filename if we don't already have one by asking Claude
+            # Get a filename if we don't already have one by asking Ai
             filename_prompt = """
                 Based on our conversation, suggest a descriptive filename
                 for saving this chat. Respond with only the filename,
@@ -579,29 +639,36 @@ class ClaudePlugin:
                 Extention should be .txt.
             """
             try:
-                filename_response = completion_method(
-                    model=self.filename_model,
+                filename_response = self._make_completion_request(
                     messages=messages + [
                         {"role": "assistant", "content": response_text},
                         {"role": "user", "content": filename_prompt},
                     ],
-                    max_tokens=100
+                    model=self.filename_model,
+                    stream=False,
+                    system=""
                 )
-            except anthropic.RateLimitError:
-                self.nvim.err_write(
-                    f"Rate limit reached. Sleeping for {self.limit_window} seconds."
-                )
-                self.nvim.err_write(
-                    "You can change the limit window with :ClaudeSettings "
-                    "limit_window=<seconds>")
-                filename_response = "rate_limit_error_on_filename_response.txt"
+                filename = self._get_filename_from_response(
+                    filename_response.json())
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:  # Rate limit error
+                    self.nvim.err_write(
+                        f"Rate limit reached. Sleeping for {self.limit_window} seconds.\n"
+                    )
+                    self.nvim.err_write(
+                        "You can change the limit window with :AiSettings "
+                        "limit_window=<seconds>\n")
+                    filename = "rate_limit_error_on_filename_response.txt"
+                else:
+                    self.nvim.out_write(
+                        f"Error generating filename:\n{format_exc()}\n")
+                    raise
             except Exception as e:
                 self.nvim.err_write(
                     f"Error generating filename:\n{format_exc()}\n"
                 )
                 return
 
-            filename = self._get_filename_from_response(filename_response)
             # Escape spaces and special characters in filename
             sanitized_filename = shlex.quote(filename)
             sanitized_filename = datetime.now().strftime(
@@ -615,59 +682,54 @@ class ClaudePlugin:
         self.nvim.current.window.cursor = (
             len(self.nvim.current.buffer), 0)
 
-    def get_claude_models(self) -> List[str]:
-        """Get a list of available Anthropic models."""
-        models = self.claude_client.models.list()
-        return [model.id for model in models.data]
+    @pynvim.command('Ai', nargs='0', sync=False)
+    def ai_command(self, args: List[str]) -> None:
+        return self.do_completion()
 
-    @pynvim.command('Cl', nargs='0', sync=False)
-    def claude_command(self, args: List[str]) -> None:
-        return self.do_completion(self.claude_client.messages.create, args)
-
-    @pynvim.command('Claude', nargs='0', sync=False)
-    def claude_full_command(self, args: List[str]) -> None:
-        return self.claude_command(args)
+    @pynvim.command('AI', nargs='0', sync=False)
+    def ai_full_command(self, args: List[str]) -> None:
+        return self.ai_command()
 
     @pynvim.command('Completion', nargs='0', sync=False)
-    def claude_full_command(self, args: List[str]) -> None:
-        return self.claude_command(args)
+    def completion_command(self, args: List[str]) -> None:
+        return self.ai_command()
 
-    @pynvim.command('CM', nargs='?', sync=True)
-    def claude_model_command(self, args: List[str]) -> None:
-        """Change the current model to the one provided or list available
-        models if no argument is given."""
-        if args:
-            models = self.get_claude_models()
-            model_name_or_index = args[0]
-            try:
-                model_index = int(model_name_or_index) - 1
-                if model_index < 0 or model_index >= len(models):
-                    self.nvim.err_write(
-                        f"Error: {model_name_or_index} is not a valid model index.\n")
-                    return
-                model = models[model_index]
-            except (ValueError, TypeError):
-                if model_name_or_index not in models:
-                    self.nvim.err_write(
-                        f"Error: {model_name_or_index} is not a valid model.\n")
-                    return
-                model = model_name_or_index
+    @pynvim.command('PM', nargs='0', sync=True)
+    def print_model_command(self, args: List[str]) -> None:
+        """Display the current model"""
+        self.nvim.out_write(f"Current model: {self.current_model}\n")
+
+    @pynvim.command('PrintModel', nargs='?', sync=True)
+    def print_model_full_command(self, args: List[str]) -> None:
+        return self.print_model_command(args)
+
+    @pynvim.command('Models', nargs='?', sync=True)
+    def models_command(self, args: List[str]) -> None:
+        """Change the current model to the one provided or list available models"""
+        try:
+            model_number = int(args[0])
+        except (IndexError, TypeError, ValueError):
+            model_number = None
+        if model_number is not None:
+            models = self.get_available_models()
+            model_index = model_number - 1
+            if model_index < 0 or model_index >= len(models):
+                self.nvim.err_write(
+                    f"Error: {model_number} is not a valid model index.\n")
+                return
+            model = models[model_index]
             self.current_model = model
             self.nvim.out_write(f"Current model changed to {model}.\n")
             self._save_attributes_to_file()
         else:
-            # Format the model list for display
-            model_list = ["Available Claude models:"]
-            for i, model in enumerate(self.get_claude_models()):
+            model_name = (args and args[0]) or None
+            model_list = ["Available models:"]
+            for i, model in enumerate(self.get_available_models()):
                 if model == self.current_model:
                     model_list.append(f"  {i + 1}. {model} (current)")
-                else:
+                elif not model_name or model_name.lower() in model.lower():
                     model_list.append(f"  {i + 1}. {model}")
             self.nvim.out_write("\n".join(model_list) + "\n")
-
-    @pynvim.command('ClaudeModel', nargs='?', sync=True)
-    def claude_model_full_command(self, args: List[str]) -> None:
-        return self.claude_model_command(args)
 
     @pynvim.command('BC', nargs='0', sync=True)
     def buffer_code_command(self, args: List[str]) -> None:
@@ -703,7 +765,7 @@ class ClaudePlugin:
         return self.buffer_code_command(args)
 
     def _is_valid_filename_comment(self, language: str, line: str) -> bool:
-        """Use Claude to validate if a line looks like a proper filename comment."""
+        """Use Ai to validate if a line looks like a proper filename comment."""
         messages = [
             {
                 "role": "user",
@@ -720,14 +782,14 @@ class ClaudePlugin:
         ]
 
         try:
-            response = self.claude_client.messages.create(
+            response = self._make_completion_request(
+                messages=messages,
                 model=self.filename_model,
                 max_tokens=128,
                 temperature=0.0,
                 system=self.system_prompt,
-                messages=messages
             )
-            return self._get_filename_from_response(response).lower().strip() == 'yes'
+            return self._get_filename_from_response(response.json()).lower().strip() == 'yes'
         except Exception as e:
             self.nvim.err_write(
                 f"Error validating filename comment:\n{format_exc()}\n"
@@ -946,13 +1008,13 @@ class ClaudePlugin:
     def truncate_conversation_full_command(self, args: List[str]) -> None:
         return self.truncate_conversation_command(args)
 
-    @pynvim.command('CS', nargs='?', sync=True)
-    def load_claude_settings_command(self, args: List[str]) -> None:
+    @pynvim.command('AISettings', nargs='?', sync=True)
+    def load_ai_settings_command(self, args: List[str]) -> None:
         if not args:
             pass
         elif args[0].lower() == 'defaults':
-            self.current_model = "claude-3-5-haiku-20241022"
-            self.filename_model = "claude-3-5-haiku-20241022"
+            self.current_model = "anthropic/claude-3.5-haiku-20241022"
+            self.filename_model = "anthropic/claude-3.5-haiku-20241022"
             self.max_tokens = DEFAULT_MAX_TOKENS
             self.truncate_conversation = True
             self.max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
@@ -975,14 +1037,14 @@ class ClaudePlugin:
                 return
             if setting == 'model':
                 value = value.strip()
-                if value not in self.get_claude_models():
+                if value not in self.get_available_models():
                     self.nvim.err_write(
                         f"Error: {value} is not a valid model.\n")
                     return
                 self.current_model = value
             elif setting == 'filename_model':
                 value = value.strip()
-                if value not in self.get_claude_models():
+                if value not in self.get_available_models():
                     self.nvim.err_write(
                         f"Error: {value} is not a valid model.\n")
                     return
@@ -1051,7 +1113,3 @@ class ClaudePlugin:
             f"timeout: {self.timeout}\n"
             f"limit_window: {self.limit_window}\n"
         )
-
-    @pynvim.command('ClaudeSettings', nargs='?', sync=True)
-    def claude_settings_full_command(self, args: List[str]) -> None:
-        return self.load_claude_settings_command(args)

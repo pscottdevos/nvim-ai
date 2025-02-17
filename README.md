@@ -1,18 +1,21 @@
-# Claude Neovim Plugin
+# Neovim AI Plugin
 
 ## Overview
 
-The Claude Neovim Plugin is a powerful integration that allows seamless interaction
-with Anthropic's Claude AI directly within Neovim. It provides advanced features
-for code generation, conversation management, and AI-assisted workflow.
+The Neovim AI Plugin is a powerful integration that allows seamless interaction
+with AI models directly within Neovim. Supporting multiple AI models through
+OpenRouter's API, including Anthropic's Claude, it provides advanced features for
+code generation, conversation management, and AI-assisted workflow.
 
 ## Prerequisites
 
 - Neovim
 - Python 3.8+
 - `pynvim` package
+- `httpx` package
 - `anthropic` package
-- Anthropic API key
+- OpenRouter API key (primary)
+- Anthropic API key (optional, for token counting)
 
 ## Installation
 
@@ -22,15 +25,15 @@ Neovim configuration.
 ```bash
 cd <repository directory>
 bash setup.sh
-export ANTHROPIC_API_KEY=<your-api-key>
+export OPENROUTER_API_KEY=<your-api-key>
 ```
 
 OR
 
 1. Install dependencies:
 ```bash
-pip install pynvim anthropic
-export ANTHROPIC_API_KEY=<your-api-key>
+pip install pynvim httpx anthropic
+export OPENROUTER_API_KEY=<your-api-key>
 ```
 
 2. Add the plugin to your Neovim configuration
@@ -38,96 +41,102 @@ export ANTHROPIC_API_KEY=<your-api-key>
 Following installation, run nvim, type `:UpdateRemotePlugin` and press <enter>,
 close nvim, and then reopen it.
 
-Add your Anthropic API key to your `.bashrc` or `.zshrc` if you want to use the
-plugin without setting the `ANTHROPIC_API_KEY` environment variable.
+Add your OpenRouter API key to your `.bashrc` or `.zshrc` if you want to use the
+plugin without setting the `OPENROUTER_API_KEY` environment variable.
 
 ## Commands
 
 ### Conversation Management
 
-- `:Claude` (`:Cl`): Send current conversation to Claude
-- `:ClaudeModel` (`:CM`): Select AI model
-- `:ClaudeModels`: List available models
+- `:Ai` (`:AI`, `:Completion`): Send current conversation to AI
+- `:Models` (`:PM`, `:PrintModel`): List or select available models
+- `:AISettings`: Load, save, or modify AI settings
 
 ### Code Interaction
 
-- `:WriteCode` (`:WC`): Extract and save code blocks from last response
-- `:BufferCode` (`:BC`): Open code blocks in new buffers
+- `:WC` (`:WriteCode`): Extract and save code blocks from last response
+- `:BC` (`:BufferCode`): Open code blocks in new buffers
 
 ### Prompt Management
 
-- `:CopyPrompt` (`:CP`): Copy current system prompt to a new buffer
+- `:CP` (`:CopyPrompt`): Copy current system prompt to a new buffer
 - `:ReplacePrompt`: Replace system prompt with buffer contents
 
 ### Token Management
 
-- `:MaxTokens` (`:MT`): Show or change the maximum number of tokens
-- `:TokenCount` (`:TC`): Respond with the number of tokens in the current buffer
+- `:MT` (`:MaxTokens`): Show or change the maximum number of tokens
+- `:TC` (`:TokenCount`): Respond with the number of tokens in the current buffer
 
 ### Conversation Truncation
 
-- `:Truncate` (`:Tr`): Toggle truncation of the conversation
-
-### Settings Management
-
-- `:ClaudeSettings` (`:CS`): Load, save, or reset Claude settings
+- `:Tr` (`:Truncate`): Toggle truncation of the conversation
 
 ## Buffer Reference
 
-Reference other buffers using `:b<number>` syntax when talking to Claude.
+Reference other buffers using `:b<number>` syntax when talking to the AI.
 This will pull in the contents of the buffer into the conversation before
-sending it to Claude.
+sending it to the AI model.
 
 ## System Prompt
 
-The plugin uses a configurable system prompt that guides Claude's responses,
+The plugin uses a configurable system prompt that guides the AI's responses,
 focusing on code quality, formatting, and best practices.
 
 ## Configuration
 
-Customize behavior by editing `system_prompt.txt` or using `:Cp` and `:Rp`
-commands.
+Customize behavior using the `:AISettings` command with the following options:
+- `model`: Set the AI model to use
+- `filename_model`: Set the model used for filename generation
+- `max_tokens`: Set maximum tokens for responses (128-8192)
+- `max_context_tokens`: Set maximum context tokens (1024-204800)
+- `truncate`: Toggle conversation truncation ('on'/'off')
+- `temperature`: Set temperature for responses (0.0-1.0)
+- `timeout`: Set request timeout in seconds (0.0-600.0)
+- `limit_window`: Set rate limit window in seconds (0.0-600.0)
 
-## Advanced Features
+Examples:
+```
+:AISettings model=anthropic/claude-3.5-haiku-20241022
+:AISettings max_tokens=4096
+:AISettings defaults    # Reset to defaults
+:AISettings save       # Save current settings
+```
 
-- Automatic filename generation for code blocks
-- Conversation history tracking
-- Multi-model support
+## Content Tags
+
+You can include file contents in your prompts using the `<content>` tag:
+```
+<content>/path/to/file.txt</content>
+```
+The plugin supports both text files and media files (images, videos).
 
 ## Example Workflow
 
-1. Open Neovim.
-2. Write a prompt and use `:Cl` to send it to Claude.
-3. Use `:Wc` to save any generated code to a file in the current directory
-   with a name suggested by Claude.
-4. Use `:Bc` to open code in buffers
+1. Open Neovim
+2. Write a prompt and use `:Ai` to send it to the AI
+3. Use `:WC` to save any generated code to files in the current directory
+4. Use `:BC` to open code blocks in new buffers
 5. Modify and iterate
 
 The plugin will automatically wrap new content with `<user>` tags and will
 save the conversation to a file in the current directory with a name suggested
-by Claude.
+by the AI.
 
 It saves after every round, except that limitations within Neovim
-will prevent the last response from Claude from being saved, so use `:w` to
+will prevent the last response from being saved, so use `:w` to
 save the file after the last round.
 
 ## Things to Try
 
-You can continue any existing conversation by opening its corresponding file
-in claude.
+You can continue any existing conversation by opening its corresponding file.
 
-If you don't like a response from Claude, you can delete it, modify your
-last prompt, and send it again. You can also modify Claude's side of the
-conversation anywhere in the file. This will "Gaslight" Claude into thinking
-that it wrote the responses the way you changed it.
+If you don't like a response, you can delete it, modify your
+last prompt, and send it again. You can also modify the AI's side of the
+conversation anywhere in the file. This will affect how the AI understands
+the conversation history.
 
-Use `:Cp` to copy the system prompt to a new buffer, modify it, and then
-use `:Rp <buffer number>` to replace the system prompt with the new contents.
-Try adding this to the end of the system prompt to see what happens:
-
-```
-End every response with "I feel pretty!"
-```
+Use `:CP` to copy the system prompt to a new buffer, modify it, and then
+use `:ReplacePrompt <buffer number>` to replace the system prompt with the new contents.
 
 ## Testing
 
@@ -136,10 +145,9 @@ Run
 python -m unittest discover -s tests
 ```
 
-
 ## License
 
-Claude Neovim Plugin - AI integration for Neovim
+Neovim AI Plugin - AI integration for Neovim
 Copyright (C) [2024] [P. Scott DeVos]
 
 This program is free software: you can redistribute it and/or modify

@@ -10,6 +10,6 @@ PLUGIN_DIR=$(dirname "$(realpath "$0")")
 mkdir -p ~/.config/nvim/rplugin/python3
 
 # Create symlink
-ln -sf "$PLUGIN_DIR/rplugin/python3/claude_plugin.py" ~/.config/nvim/rplugin/python3/claude_plugin.py
+ln -sf "$PLUGIN_DIR/rplugin/python3/ai_plugin.py" ~/.config/nvim/rplugin/python3/ai_plugin.py
 
 echo "Plugin installed. Please run :UpdateRemotePlugins in Neovim, then close and reopen nvim."

@@ -1,2 +1,2 @@
-anthropic>=0.42
 pynvim
+httpx
