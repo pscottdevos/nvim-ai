@@ -21,6 +21,7 @@ import mimetypes
 import os
 import re
 import shlex
+from copy import copy
 from datetime import datetime
 from traceback import format_exc
 from typing import Callable, Optional, List, Tuple
@@ -515,10 +516,9 @@ class AIPlugin:
             "stream": stream,
             "max_tokens": max_tokens or self.max_tokens,
             "temperature": temperature or self.temperature,
-            "system": system or self.system_prompt,
         }
-        if system == "":
-            data.pop("system")
+        if system:
+            data["messages"] = [{"role": "system", "content": system}] + messages
 
         if stream:
             method = self.http_client.stream
@@ -543,6 +543,11 @@ class AIPlugin:
             )
             response.raise_for_status()
             models = response.json()
+            for model in models["data"]:
+                if model["id"] == "anthropic/claude-3.5-sonnet-20240620":
+                    sonnet_latest = copy(model)
+                    sonnet_latest["id"] = "anthropic/claude-3.5-sonnet-20241022"
+            models["data"].append(sonnet_latest)
             return sorted([model["id"] for model in models["data"]])
         except Exception as e:
             self.nvim.err_write(f"Error fetching models:\n{format_exc()}\n")
@@ -587,7 +592,13 @@ class AIPlugin:
                     f"{len(truncated_messages)} messages.\n")
                 messages = truncated_messages
         try:
-            response = self._make_completion_request(messages, stream=True)
+            response = self._make_completion_request(
+                messages,
+                system=self.system_prompt,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                stream=True,
+            )
             if not response:
                 return
 
@@ -646,7 +657,9 @@ class AIPlugin:
                     ],
                     model=self.filename_model,
                     stream=False,
-                    system=""
+                    temperature=0.0,
+                    max_tokens=128,
+                    system="",
                 )
                 filename = self._get_filename_from_response(
                     filename_response.json())
