@@ -518,7 +518,8 @@ class AIPlugin:
             "temperature": temperature or self.temperature,
         }
         if system:
-            data["messages"] = [{"role": "system", "content": system}] + messages
+            data["messages"] = [
+                {"role": "system", "content": system}] + messages
 
         if stream:
             method = self.http_client.stream
@@ -628,6 +629,9 @@ class AIPlugin:
                                          2] + current_lines
                         # Force redraw
                         self.nvim.command('redraw')
+                        # move cursor to the end of the buffer
+                        self.nvim.current.window.cursor = (
+                            len(self.nvim.current.buffer), 0)
 
         except Exception as e:
             self.nvim.err_write(
