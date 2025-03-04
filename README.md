@@ -3,46 +3,48 @@
 ## Overview
 
 The Neovim AI Plugin is a powerful integration that allows seamless interaction
-with AI models directly within Neovim. Supporting multiple AI models through
-OpenRouter's API, including Anthropic's Claude, it provides advanced features for
-code generation, conversation management, and AI-assisted workflow.
+with AI models directly within Neovim. Using OpenRouter's API to access a wide variety
+of AI models, it provides advanced features for code generation, conversation 
+management, and AI-assisted workflow.
 
 ## Prerequisites
 
 - Neovim
 - Python 3.8+
-- `pynvim` package
-- `httpx` package
-- `anthropic` package
-- OpenRouter API key (primary)
-- Anthropic API key (optional, for token counting)
+- System packages:
+  ```bash
+  # Ubuntu/Debian
+  sudo apt-get install python3-dev python3-pynvim python3-httpx
+  
+  # Fedora
+  sudo dnf install python3-devel python3-pynvim python3-httpx
+  
+  # Arch Linux
+  sudo pacman -S python-pynvim python-httpx
+  ```
+- Required packages:
+  - `pynvim`
+  - `httpx`
+- OpenRouter API key
 
 ## Installation
 
-Run the `setup.sh` script to install the dependencies and add the plugin to your
-Neovim configuration.
-
+1. Clone the plugin:
 ```bash
-cd <repository directory>
-bash setup.sh
+cd ~/.local/share/nvim/site/pack/plugins/start/
+git clone https://github.com/pscottdv/nvim-ai.git
+```
+
+2. Set up your OpenRouter API key:
+```bash
 export OPENROUTER_API_KEY=<your-api-key>
 ```
 
-OR
-
-1. Install dependencies:
-```bash
-pip install pynvim httpx anthropic
-export OPENROUTER_API_KEY=<your-api-key>
-```
-
-2. Add the plugin to your Neovim configuration
-
-Following installation, run nvim, type `:UpdateRemotePlugin` and press <enter>,
-close nvim, and then reopen it.
+3. Initialize the plugin:
+Run nvim, type `:UpdateRemotePlugins` and press <enter>, close nvim, and then reopen it.
 
 Add your OpenRouter API key to your `.bashrc` or `.zshrc` if you want to use the
-plugin without setting the `OPENROUTER_API_KEY` environment variable.
+plugin without setting the `OPENROUTER_API_KEY` environment variable each time.
 
 ## Commands
 
@@ -122,27 +124,25 @@ The plugin will automatically wrap new content with `<user>` tags and will
 save the conversation to a file in the current directory with a name suggested
 by the AI.
 
-It saves after every round, except that limitations within Neovim
-will prevent the last response from being saved, so use `:w` to
-save the file after the last round.
+It saves after every round.
 
-## Things to Try
+## Tips and Tricks
 
-You can continue any existing conversation by opening its corresponding file.
-
-If you don't like a response, you can delete it, modify your
-last prompt, and send it again. You can also modify the AI's side of the
-conversation anywhere in the file. This will affect how the AI understands
-the conversation history.
-
-Use `:CP` to copy the system prompt to a new buffer, modify it, and then
-use `:ReplacePrompt <buffer number>` to replace the system prompt with the new contents.
+- Continue any existing conversation by opening its corresponding file
+- If you don't like a response:
+  - Delete it
+  - Modify your last prompt
+  - Send it again
+- You can modify the AI's responses anywhere in the file to affect how it understands
+  the conversation history
+- Use `:CP` to copy the system prompt to a new buffer, modify it, and then
+  use `:ReplacePrompt <buffer number>` to replace the system prompt with the new contents
 
 ## Testing
 
-Run
-```
-python -m unittest discover -s tests
+Run the test suite:
+```bash
+python3 -m unittest discover -s tests
 ```
 
 ## License

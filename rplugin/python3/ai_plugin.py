@@ -26,7 +26,6 @@ from datetime import datetime
 from traceback import format_exc
 from typing import Callable, Optional, List, Tuple
 
-import anthropic
 import httpx
 import pynvim
 
@@ -35,6 +34,7 @@ OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+ANTHROPIC_API_BASE = "https://api.anthropic.com/v1"
 
 # Pattern to match :b<buffer_number> with at least one surrounding whitespace
 BUFFER_PATTERN = re.compile(r'\s+:b(\d+)\s+')
@@ -131,7 +131,6 @@ class AIPlugin:
         self.nvim = nvim
         self.buffer_filenames = {}
         self.http_client = httpx.Client()
-        self.claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         # Default settings
         default_config = {
             "current_model": "anthropic/claude-3.5-haiku-20241022",
@@ -255,8 +254,12 @@ class AIPlugin:
                     return ""
 
                 data = json.loads(chunk_data)
-                if content := data["choices"][0]["delta"].get("content"):
-                    return content
+                
+                # Handle OpenRouter format
+                if "choices" in data and len(data["choices"]) > 0:
+                    if "delta" in data["choices"][0]:
+                        if content := data["choices"][0]["delta"].get("content"):
+                            return content
         except Exception:
             pass
         return ""
@@ -273,35 +276,55 @@ class AIPlugin:
         except (KeyError, IndexError):
             return "untitled.txt"
 
-    def _count_tokens(self, messages: List[dict]) -> Tuple[int, int]:
+    def _count_tokens(self, messages: List[dict]) -> Tuple[int, List[int]]:
         # Uses Claude's token counting API because openrouter doesn't have a
         # token counting API. This will not be 100% accurate for models that
         # do not use the same tokenization as Claude.
         if not messages:
             return 0, []
+        
+        headers = {
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "token-counting-2024-11-01", 
+            "content-type": "application/json",
+        }
+        
         # Tokenize the system prompt and first message because we have to
         # include a message or anthropic will throw an error
-        system_prompt_tokens_and_first_message = \
-            self.claude_client.beta.messages.count_tokens(
-                betas=["token-counting-2024-11-01"],
-                model='claude-3-5-haiku-20241022',
-                system=self.system_prompt,
-                messages=[messages[0]],
-            )
+        system_prompt_data = {
+            "model": "claude-3-5-haiku-20241022",
+            "system": self.system_prompt,
+            "messages": [messages[0]],
+        }
+        
+        # Make the token counting request
+        system_response = self.http_client.post(
+            f"{ANTHROPIC_API_BASE}/messages/count_tokens",
+            headers=headers,
+            json=system_prompt_data,
+        )
+        system_prompt_tokens_and_first_message = system_response.json().get("input_tokens", 0)
+
         # Tokenize each message and store the token counts
-        message_tokens = [
-            self.claude_client.beta.messages.count_tokens(
-                betas=["token-counting-2024-11-01"],
-                model='claude-3-5-haiku-20241022',
-                system="",
-                messages=[msg],
+        message_tokens = []
+        for msg in messages:
+            message_data = {
+                "model": "claude-3-5-haiku-20241022",
+                "system": "",
+                "messages": [msg],
+            }
+            response = self.http_client.post(
+
+                f"{ANTHROPIC_API_BASE}/messages/count_tokens",
+                headers=headers,
+                json=message_data,
             )
-            for msg in messages
-        ]
+            message_tokens.append(response.json().get("input_tokens", 0))
+        
         # Subtract the tokens of the first message because we included it
         # with the system prompt
-        prompt_tokens = system_prompt_tokens_and_first_message.input_tokens - \
-            message_tokens[0].input_tokens
+        prompt_tokens = system_prompt_tokens_and_first_message - message_tokens[0]
 
         return prompt_tokens, message_tokens
 
@@ -445,8 +468,7 @@ class AIPlugin:
 
         prompt_tokens, message_tokens = self._count_tokens(messages)
 
-        total_tokens = prompt_tokens + \
-            sum([m.input_tokens for m in message_tokens])
+        total_tokens = prompt_tokens + sum(message_tokens)
 
         if total_tokens <= max_tokens:
             return messages
@@ -456,9 +478,9 @@ class AIPlugin:
 
         # Iterate over the messages in reverse order
         for i in range(len(messages) - 1, 0, -1):
-            if current_tokens + message_tokens[i].input_tokens <= max_tokens:
+            if current_tokens + message_tokens[i] <= max_tokens:
                 truncated_messages.insert(0, messages[i])
-                current_tokens += message_tokens[i].input_tokens
+                current_tokens += message_tokens[i]
             else:
                 break
 
@@ -998,7 +1020,7 @@ class AIPlugin:
             messages = [{"role": "user", "content": full_content}]
             prompt_tokens, message_tokens = self._count_tokens(messages)
             total_tokens = prompt_tokens + \
-                sum([m.input_tokens for m in message_tokens])
+                sum([m["input_tokens"] for m in message_tokens])
             self.nvim.out_write(
                 f"Current buffer token count (including <content>): {total_tokens}\n"
             )
